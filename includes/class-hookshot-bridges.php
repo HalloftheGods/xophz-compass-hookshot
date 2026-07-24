@@ -46,6 +46,15 @@ class Hookshot_Bridges {
 			'handler'     => [ $this, 'bridge_wp_action' ],
 		] );
 
+		self::register( 'github_plugin_release', [
+			'name'        => 'GitHub Plugin Release',
+			'description' => 'Auto-update a plugin when a GitHub release is published.',
+			'icon'        => 'fab fa-github',
+			'category'    => 'DevOps',
+			'fields'      => [ 'allowed_plugins' ], // Comma-separated list of allowed plugin slugs, or blank for all
+			'handler'     => [ $this, 'bridge_github_plugin_release' ],
+		] );
+
 		do_action( 'xophz_hookshot_register_bridges' );
 	}
 
@@ -218,6 +227,101 @@ class Hookshot_Bridges {
 		}
 
 		do_action( $action_name, $payload, $webhook_id );
+	}
+
+	public function bridge_github_plugin_release( $payload, $webhook_id, $config ) {
+		// Only run on release published event
+		$action = self::extract_field( $payload, 'action' );
+		if ( $action !== 'published' && $action !== 'released' ) {
+			return;
+		}
+
+		$repo_name = self::extract_field( $payload, 'repository.name' );
+		if ( empty( $repo_name ) ) {
+			return;
+		}
+
+		// Optional filter to only update specific plugins if configured
+		$allowed_plugins = $config['allowed_plugins'] ?? '';
+		if ( ! empty( $allowed_plugins ) ) {
+			$allowed_list = array_map( 'trim', explode( ',', $allowed_plugins ) );
+			if ( ! in_array( $repo_name, $allowed_list, true ) ) {
+				return;
+			}
+		}
+
+		$release = (object) self::extract_field( $payload, 'release' );
+		if ( empty( $release ) ) {
+			return;
+		}
+
+		$download_url = '';
+		$assets = $release->assets ?? [];
+		if ( ! empty( $assets ) ) {
+			foreach ( $assets as $asset ) {
+				$asset = (object) $asset;
+				if ( substr( $asset->name ?? '', -4 ) === '.zip' ) {
+					$download_url = $asset->browser_download_url;
+					break;
+				}
+			}
+		}
+
+		if ( empty( $download_url ) ) {
+			$download_url = $release->zipball_url ?? '';
+		}
+
+		if ( empty( $download_url ) ) {
+			return;
+		}
+
+		require_once ABSPATH . 'wp-admin/includes/file.php';
+		require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
+		require_once ABSPATH . 'wp-admin/includes/class-plugin-upgrader.php';
+
+		// Silent upgrader skin so it doesn't print HTML to the REST API request output
+		$skin     = new WP_Ajax_Upgrader_Skin();
+		$upgrader = new Plugin_Upgrader( $skin );
+		
+		// Add rename filter
+		$slug = $repo_name;
+		$rename_filter = function( $source, $remote_source, $upgrader_obj, $hook_extra = null ) use ( $slug ) {
+			global $wp_filesystem;
+			$expected_dir = $slug;
+			$source_dir = untrailingslashit( $source );
+			
+			if ( basename( $source_dir ) === $expected_dir ) {
+				return $source;
+			}
+			
+			$new_source = trailingslashit( $remote_source ) . $expected_dir;
+			if ( $wp_filesystem->move( $source, $new_source ) ) {
+				return trailingslashit( $new_source );
+			}
+			return $source;
+		};
+		
+		add_filter( 'upgrader_source_selection', $rename_filter, 10, 4 );
+
+		// Run installation. This actually upgrades it if it exists or installs it if it doesn't.
+		$args = [
+			'overwrite_package' => true,
+		];
+		$installed = $upgrader->install( $download_url, $args );
+		
+		remove_filter( 'upgrader_source_selection', $rename_filter, 10 );
+
+		if ( ! is_wp_error( $installed ) && $installed ) {
+			if ( ! function_exists( 'activate_plugin' ) ) {
+				require_once ABSPATH . 'wp-admin/includes/plugin.php';
+			}
+			$plugin_file = $slug . '/' . $slug . '.php';
+			activate_plugin( $plugin_file );
+			
+			// Optional: Clear update transients
+			delete_site_transient( 'update_plugins' );
+			delete_transient( 'xophz_gh_rel_' . md5( 'HalloftheGods/' . $slug ) );
+		}
 	}
 
 	private static function extract_field( $payload, $field_path ) {
