@@ -274,7 +274,15 @@ class Hookshot_Bridges {
 			$download_url = $release->zipball_url ?? '';
 		}
 
-		if ( empty( $download_url ) ) {
+		if ( empty( $download_url ) && $action !== 'push' ) {
+			return;
+		}
+
+		$plugin_dir = WP_PLUGIN_DIR . '/' . $repo_name;
+		if ( file_exists( $plugin_dir ) && ( is_dir( $plugin_dir . '/.git' ) || is_file( $plugin_dir . '/.git' ) ) ) {
+			exec( 'git -C ' . escapeshellarg( $plugin_dir ) . ' pull origin main 2>&1' );
+			delete_site_transient( 'update_plugins' );
+			delete_transient( 'xophz_gh_rel_' . md5( 'HalloftheGods/' . $repo_name ) );
 			return;
 		}
 
