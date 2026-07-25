@@ -51,7 +51,7 @@ class Hookshot_Bridges {
 			'description' => 'Auto-update a plugin when a GitHub release is published.',
 			'icon'        => 'fab fa-github',
 			'category'    => 'DevOps',
-			'fields'      => [ 'allowed_plugins' ], // Comma-separated list of allowed plugin slugs, or blank for all
+			'fields'      => [ 'allowed_plugins', 'github_token' ],
 			'handler'     => [ $this, 'bridge_github_plugin_release' ],
 		] );
 
@@ -255,13 +255,16 @@ class Hookshot_Bridges {
 			return;
 		}
 
+		$github_token = $config['github_token'] ?? '';
 		$download_url = '';
 		$assets = $release->assets ?? [];
 		if ( ! empty( $assets ) ) {
 			foreach ( $assets as $asset ) {
 				$asset = (object) $asset;
 				if ( substr( $asset->name ?? '', -4 ) === '.zip' ) {
-					$download_url = $asset->browser_download_url;
+					// Use the API url for private repo assets (requires token + Accept header).
+					// Use browser_download_url for public repos (no token).
+					$download_url = ! empty( $github_token ) ? $asset->url : $asset->browser_download_url;
 					break;
 				}
 			}
@@ -282,7 +285,18 @@ class Hookshot_Bridges {
 		// Silent upgrader skin so it doesn't print HTML to the REST API request output
 		$skin     = new WP_Ajax_Upgrader_Skin();
 		$upgrader = new Plugin_Upgrader( $skin );
-		
+
+		// Set up GitHub authentication for private repo downloads
+		$auth_filter = function( $args, $url ) use ( $github_token ) {
+			if ( ! empty( $github_token ) && ( strpos( $url, 'api.github.com' ) !== false || strpos( $url, 'github.com' ) !== false ) ) {
+				$args['headers']['Authorization'] = 'token ' . $github_token;
+				$args['headers']['Accept'] = 'application/octet-stream';
+			}
+			return $args;
+		};
+
+		add_filter( 'http_request_args', $auth_filter, 10, 2 );
+
 		// Add rename filter
 		$slug = $repo_name;
 		$rename_filter = function( $source, $remote_source, $upgrader_obj, $hook_extra = null ) use ( $slug ) {
@@ -310,6 +324,7 @@ class Hookshot_Bridges {
 		$installed = $upgrader->install( $download_url, $args );
 		
 		remove_filter( 'upgrader_source_selection', $rename_filter, 10 );
+		remove_filter( 'http_request_args', $auth_filter, 10 );
 
 		if ( ! is_wp_error( $installed ) && $installed ) {
 			if ( ! function_exists( 'activate_plugin' ) ) {

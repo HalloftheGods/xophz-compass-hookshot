@@ -82,6 +82,18 @@ class Hookshot_Signature {
 	}
 
 	private static function try_raw_hmac( $header_value, $raw_body, $signing_secret ) {
+		// Handle GitHub style sha256= prefixes
+		if ( strpos( $header_value, 'sha256=' ) === 0 ) {
+			$header_value = substr( $header_value, 7 );
+		} elseif ( strpos( $header_value, 'sha1=' ) === 0 ) {
+			$expected = hash_hmac( 'sha1', $raw_body, $signing_secret );
+			$isValidRawSignature = hash_equals( $expected, substr( $header_value, 5 ) );
+			if ( ! $isValidRawSignature ) {
+				return new WP_Error( 'invalid_signature', 'Webhook signature mismatch.', [ 'status' => 401 ] );
+			}
+			return true;
+		}
+
 		$expected = hash_hmac( 'sha256', $raw_body, $signing_secret );
 
 		$isValidRawSignature = hash_equals( $expected, $header_value );
