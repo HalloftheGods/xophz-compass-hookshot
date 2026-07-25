@@ -335,6 +335,22 @@ class Hookshot_Bridges {
 		
 		add_filter( 'upgrader_source_selection', $rename_filter, 10, 4 );
 
+		if ( ! function_exists( 'is_plugin_active' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/plugin.php';
+		}
+		$plugin_file = $slug . '/' . $slug . '.php';
+		$was_active = is_plugin_active( $plugin_file );
+
+		// Backup the existing plugin
+		global $wp_filesystem;
+		$plugin_dir_path = WP_PLUGIN_DIR . '/' . $slug;
+		$backup_dir_path = WP_PLUGIN_DIR . '/' . $slug . '_hookshot_backup_' . time();
+		$backup_created = false;
+		
+		if ( $wp_filesystem->is_dir( $plugin_dir_path ) ) {
+			$backup_created = $wp_filesystem->copy_dir( $plugin_dir_path, $backup_dir_path );
+		}
+
 		// Run installation. This actually upgrades it if it exists or installs it if it doesn't.
 		$args = [
 			'overwrite_package' => true,
@@ -344,12 +360,28 @@ class Hookshot_Bridges {
 		remove_filter( 'upgrader_source_selection', $rename_filter, 10 );
 		remove_filter( 'http_request_args', $auth_filter, 10 );
 
-		if ( ! is_wp_error( $installed ) && $installed ) {
-			if ( ! function_exists( 'activate_plugin' ) ) {
-				require_once ABSPATH . 'wp-admin/includes/plugin.php';
+		$install_failed = is_wp_error( $installed ) || ! $installed;
+		$plugin_missing = ! $wp_filesystem->is_file( $plugin_dir_path . '/' . $slug . '.php' );
+
+		if ( $backup_created ) {
+			if ( $install_failed || $plugin_missing ) {
+				// Rollback
+				if ( $wp_filesystem->is_dir( $plugin_dir_path ) ) {
+					$wp_filesystem->delete( $plugin_dir_path, true );
+				}
+				$wp_filesystem->move( $backup_dir_path, $plugin_dir_path );
+				$installed = false; // Force fail state so it doesn't activate
+				$plugin_missing = false; // We restored it, so it's not missing anymore
+			} else {
+				// Success, delete backup
+				$wp_filesystem->delete( $backup_dir_path, true );
 			}
-			$plugin_file = $slug . '/' . $slug . '.php';
-			activate_plugin( $plugin_file );
+		}
+
+		if ( ! is_wp_error( $installed ) && $installed && ! $plugin_missing ) {
+			if ( $was_active ) {
+				activate_plugin( $plugin_file );
+			}
 			
 			// Optional: Clear update transients
 			delete_site_transient( 'update_plugins' );
