@@ -270,10 +270,7 @@ class Hookshot_Bridges {
 			}
 		}
 
-		if ( empty( $download_url ) ) {
-			$download_url = $release->zipball_url ?? '';
-		}
-
+		// Strict check: Only proceed if official packaged release zip asset exists
 		if ( empty( $download_url ) && $action !== 'push' ) {
 			return;
 		}
