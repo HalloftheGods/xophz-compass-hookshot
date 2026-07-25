@@ -18,7 +18,7 @@
  * Plugin Name:       Xophz Magic Hookshot
  * Plugin URI:        https://github.com/HalloftheGods/xophz-compass-hookshot
  * Description:       Incoming and outgoing webhook management for the COMPASS ecosystem. Latch onto external APIs.
- * Version:           26.7.25.374
+ * Version:           26.7.25.375
  * Author:            Hall of the Gods, Inc.
  * Author URI:        https://www.hallofthegods.com/
  * License:           GPL-2.0+
