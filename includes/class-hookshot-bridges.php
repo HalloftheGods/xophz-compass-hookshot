@@ -249,6 +249,8 @@ class Hookshot_Bridges {
 				return;
 			}
 		}
+		
+		$is_private = self::extract_field( $payload, 'repository.private' );
 
 		$release = (object) self::extract_field( $payload, 'release' );
 		if ( empty( $release ) ) {
@@ -262,9 +264,8 @@ class Hookshot_Bridges {
 			foreach ( $assets as $asset ) {
 				$asset = (object) $asset;
 				if ( substr( $asset->name ?? '', -4 ) === '.zip' ) {
-					// Use the API url for private repo assets (requires token + Accept header).
-					// Use browser_download_url for public repos (no token).
-					$download_url = ! empty( $github_token ) ? $asset->url : $asset->browser_download_url;
+					// Always use browser_download_url for public repos to avoid S3 redirect auth rejection bugs
+					$download_url = ( $is_private && ! empty( $github_token ) ) ? $asset->url : $asset->browser_download_url;
 					break;
 				}
 			}
@@ -284,16 +285,28 @@ class Hookshot_Bridges {
 		}
 
 		require_once ABSPATH . 'wp-admin/includes/file.php';
-		require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
-		require_once ABSPATH . 'wp-admin/includes/class-plugin-upgrader.php';
+		require_once ABSPATH . 'wp-admin/includes/template.php';
+		if ( file_exists( ABSPATH . 'wp-admin/includes/class-wp-upgrader.php' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
+		}
+		if ( file_exists( ABSPATH . 'wp-admin/includes/class-plugin-upgrader.php' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/class-plugin-upgrader.php';
+		}
 
 		// Silent upgrader skin so it doesn't print HTML to the REST API request output
-		$skin     = new WP_Ajax_Upgrader_Skin();
+		if ( class_exists( 'Automatic_Upgrader_Skin' ) ) {
+			$skin = new Automatic_Upgrader_Skin();
+		} elseif ( class_exists( 'WP_Ajax_Upgrader_Skin' ) ) {
+			$skin = new WP_Ajax_Upgrader_Skin();
+		} else {
+			$skin = new WP_Upgrader_Skin();
+		}
+		
 		$upgrader = new Plugin_Upgrader( $skin );
 
-		// Set up GitHub authentication for private repo downloads
-		$auth_filter = function( $args, $url ) use ( $github_token ) {
-			if ( ! empty( $github_token ) && ( strpos( $url, 'api.github.com' ) !== false || strpos( $url, 'github.com' ) !== false ) ) {
+		// Set up GitHub authentication ONLY for private repo downloads
+		$auth_filter = function( $args, $url ) use ( $github_token, $is_private ) {
+			if ( $is_private && ! empty( $github_token ) && ( strpos( $url, 'api.github.com' ) !== false || strpos( $url, 'github.com' ) !== false ) ) {
 				$args['headers']['Authorization'] = 'token ' . $github_token;
 				$args['headers']['Accept'] = 'application/octet-stream';
 			}
