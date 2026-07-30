@@ -272,14 +272,17 @@ class Hookshot_Bridges {
 			];
 		}
 
+		$slug = strtolower( $repo_name );
+
 		// Optional filter to only update specific plugins if configured
 		$allowed_plugins = $config['allowed_plugins'] ?? '';
 		if ( ! empty( $allowed_plugins ) ) {
 			$allowed_list = array_map( 'trim', explode( ',', $allowed_plugins ) );
-			if ( ! in_array( $repo_name, $allowed_list, true ) ) {
+			if ( ! in_array( $repo_name, $allowed_list, true ) && ! in_array( $slug, $allowed_list, true ) ) {
 				return [
 					'status'  => 'skipped',
 					'details' => "Repository '{$repo_name}' is not in allowed plugins list ({$allowed_plugins}).",
+					'slug'    => $slug,
 				];
 			}
 		}
@@ -291,8 +294,11 @@ class Hookshot_Bridges {
 			return [
 				'status'  => 'skipped',
 				'details' => 'Missing release object in payload.',
+				'slug'    => $slug,
 			];
 		}
+
+		$release_tag = $release->tag_name ?? $release->name ?? 'unknown';
 
 		$github_token = $config['github_token'] ?? '';
 		if ( empty( $github_token ) ) {
@@ -309,6 +315,7 @@ class Hookshot_Bridges {
 			return [
 				'status'  => 'error',
 				'details' => "Repository '{$repo_name}' is private, but no GitHub Access Token is configured in Hookshot or COMPASS settings.",
+				'slug'    => $slug,
 			];
 		}
 
@@ -328,18 +335,54 @@ class Hookshot_Bridges {
 		// Strict check: Only proceed if official packaged release zip asset exists
 		if ( empty( $download_url ) ) {
 			return [
-				'status'  => 'skipped',
-				'details' => "No release ZIP asset found for repository '{$repo_name}'.",
+				'status'      => 'skipped',
+				'details'     => "No release ZIP asset found for repository '{$repo_name}'.",
+				'slug'        => $slug,
+				'release_tag' => $release_tag,
 			];
 		}
 
 		require_once ABSPATH . 'wp-admin/includes/file.php';
 		require_once ABSPATH . 'wp-admin/includes/template.php';
+		if ( ! function_exists( 'is_plugin_active' ) || ! function_exists( 'get_plugin_data' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/plugin.php';
+		}
 		if ( file_exists( ABSPATH . 'wp-admin/includes/class-wp-upgrader.php' ) ) {
 			require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
 		}
 		if ( file_exists( ABSPATH . 'wp-admin/includes/class-plugin-upgrader.php' ) ) {
 			require_once ABSPATH . 'wp-admin/includes/class-plugin-upgrader.php';
+		}
+
+		WP_Filesystem();
+		global $wp_filesystem;
+		if ( ! is_object( $wp_filesystem ) ) {
+			require_once ABSPATH . 'wp-admin/includes/class-wp-filesystem-base.php';
+			require_once ABSPATH . 'wp-admin/includes/class-wp-filesystem-direct.php';
+			$wp_filesystem = new WP_Filesystem_Direct( null );
+		}
+
+		$plugin_dir_path  = WP_PLUGIN_DIR . '/' . $slug;
+		$plugin_file_path = $plugin_dir_path . '/' . $slug . '.php';
+		$plugin_file      = $slug . '/' . $slug . '.php';
+
+		// Extract old plugin version before backup/update
+		$old_version = 'not installed';
+		if ( file_exists( $plugin_file_path ) ) {
+			$old_data    = get_plugin_data( $plugin_file_path, false, false );
+			$old_version = ! empty( $old_data['Version'] ) ? $old_data['Version'] : 'unknown';
+		}
+
+		$was_active = is_plugin_active( $plugin_file );
+
+		// Clean up any stale backup directories from previous runs
+		$stale_backups = glob( WP_PLUGIN_DIR . '/' . $slug . '_hookshot_backup_*' );
+		if ( is_array( $stale_backups ) ) {
+			foreach ( $stale_backups as $stale_dir ) {
+				if ( $wp_filesystem->is_dir( $stale_dir ) ) {
+					$wp_filesystem->delete( $stale_dir, true );
+				}
+			}
 		}
 
 		// Silent upgrader skin so it doesn't print HTML to the REST API request output
@@ -358,7 +401,7 @@ class Hookshot_Bridges {
 			if ( $is_private && ! empty( $github_token ) ) {
 				if ( strpos( $url, 'api.github.com' ) !== false ) {
 					$args['headers']['Authorization'] = 'token ' . $github_token;
-					$args['headers']['Accept'] = 'application/octet-stream';
+					$args['headers']['Accept']        = 'application/octet-stream';
 				} else {
 					unset( $args['headers']['Authorization'] );
 				}
@@ -369,7 +412,6 @@ class Hookshot_Bridges {
 		add_filter( 'http_request_args', $auth_filter, 10, 2 );
 
 		// Add rename filter
-		$slug = $repo_name;
 		$rename_filter = function( $source, $remote_source, $upgrader_obj, $hook_extra = null ) use ( $slug ) {
 			global $wp_filesystem;
 			if ( ! is_object( $wp_filesystem ) ) {
@@ -378,13 +420,16 @@ class Hookshot_Bridges {
 				$wp_filesystem = new WP_Filesystem_Direct( null );
 			}
 			$expected_dir = $slug;
-			$source_dir = untrailingslashit( $source );
+			$source_dir   = untrailingslashit( $source );
 			
 			if ( basename( $source_dir ) === $expected_dir ) {
 				return $source;
 			}
 			
 			$new_source = trailingslashit( $remote_source ) . $expected_dir;
+			if ( $wp_filesystem->is_dir( $new_source ) ) {
+				$wp_filesystem->delete( $new_source, true );
+			}
 			if ( $wp_filesystem->move( $source, $new_source ) ) {
 				return trailingslashit( $new_source );
 			}
@@ -393,34 +438,28 @@ class Hookshot_Bridges {
 		
 		add_filter( 'upgrader_source_selection', $rename_filter, 10, 4 );
 
-		if ( ! function_exists( 'is_plugin_active' ) ) {
-			require_once ABSPATH . 'wp-admin/includes/plugin.php';
-		}
-		$plugin_file = $slug . '/' . $slug . '.php';
-		$was_active = is_plugin_active( $plugin_file );
-
-		// Backup the existing plugin
-		if ( ! function_exists( 'WP_Filesystem' ) || ! function_exists( 'copy_dir' ) ) {
-			require_once ABSPATH . 'wp-admin/includes/file.php';
-		}
-		WP_Filesystem();
-		global $wp_filesystem;
-		if ( ! is_object( $wp_filesystem ) ) {
-			require_once ABSPATH . 'wp-admin/includes/class-wp-filesystem-base.php';
-			require_once ABSPATH . 'wp-admin/includes/class-wp-filesystem-direct.php';
-			$wp_filesystem = new WP_Filesystem_Direct( null );
-		}
-
-		$plugin_dir_path = WP_PLUGIN_DIR . '/' . $slug;
+		// Create backup of existing plugin
 		$backup_dir_path = WP_PLUGIN_DIR . '/' . $slug . '_hookshot_backup_' . time();
-		$backup_created = false;
+		$backup_created  = false;
 		
 		if ( $wp_filesystem->is_dir( $plugin_dir_path ) ) {
-			$res = copy_dir( $plugin_dir_path, $backup_dir_path );
+			$res            = copy_dir( $plugin_dir_path, $backup_dir_path );
 			$backup_created = ! is_wp_error( $res ) && $res !== false;
+			
+			if ( ! $backup_created ) {
+				remove_filter( 'upgrader_source_selection', $rename_filter, 10 );
+				remove_filter( 'http_request_args', $auth_filter, 10 );
+				return [
+					'status'       => 'error',
+					'details'      => 'Failed to create backup of existing plugin. Aborting update to prevent data loss.',
+					'slug'         => $slug,
+					'old_version'  => $old_version,
+					'target_tag'   => $release_tag,
+				];
+			}
 		}
 
-		// Run installation. This actually upgrades it if it exists or installs it if it doesn't.
+		// Run installation. Overwrites existing package safely.
 		$args = [
 			'overwrite_package' => true,
 		];
@@ -430,8 +469,9 @@ class Hookshot_Bridges {
 		remove_filter( 'http_request_args', $auth_filter, 10 );
 
 		$install_failed = is_wp_error( $installed ) || ! $installed;
-		$plugin_missing = ! $wp_filesystem->is_file( $plugin_dir_path . '/' . $slug . '.php' );
+		$plugin_missing = ! $wp_filesystem->is_file( $plugin_file_path );
 
+		$rollback_performed = false;
 		if ( $backup_created ) {
 			if ( $install_failed || $plugin_missing ) {
 				// Rollback
@@ -439,10 +479,11 @@ class Hookshot_Bridges {
 					$wp_filesystem->delete( $plugin_dir_path, true );
 				}
 				$wp_filesystem->move( $backup_dir_path, $plugin_dir_path );
-				$installed = false; // Force fail state so it doesn't activate
-				$plugin_missing = false; // We restored it, so it's not missing anymore
+				$installed          = false;
+				$plugin_missing     = false;
+				$rollback_performed = true;
 			} else {
-				// Success, delete backup
+				// Delete backup on success
 				$wp_filesystem->delete( $backup_dir_path, true );
 			}
 		}
@@ -451,21 +492,40 @@ class Hookshot_Bridges {
 			if ( $was_active ) {
 				activate_plugin( $plugin_file );
 			}
+
+			// Extract new plugin version
+			$new_version = 'unknown';
+			if ( file_exists( $plugin_file_path ) ) {
+				$new_data    = get_plugin_data( $plugin_file_path, false, false );
+				$new_version = ! empty( $new_data['Version'] ) ? $new_data['Version'] : $release_tag;
+			}
 			
-			// Optional: Clear update transients
+			// Clear update transients
 			delete_site_transient( 'update_plugins' );
 			delete_transient( 'xophz_gh_rel_' . md5( 'HalloftheGods/' . $slug ) );
 
 			return [
-				'status'  => 'success',
-				'details' => "Plugin '{$slug}' updated successfully from release ZIP asset." . ( $git_failure_msg ? " (Git note: {$git_failure_msg})" : "" ),
+				'status'         => 'success',
+				'details'        => "Plugin '{$slug}' updated successfully: v{$old_version} -> v{$new_version} (Release {$release_tag}).",
+				'slug'           => $slug,
+				'old_version'    => $old_version,
+				'new_version'    => $new_version,
+				'upgrade_path'   => "v{$old_version} -> v{$new_version}",
+				'release_tag'    => $release_tag,
+				'was_active'     => $was_active,
+				'is_active'      => is_plugin_active( $plugin_file ),
+				'backups_clean'  => true,
 			];
 		}
 
 		$err_msg = is_wp_error( $installed ) ? $installed->get_error_message() : 'Plugin upgrade failed during ZIP installation.';
 		return [
-			'status'  => 'error',
-			'details' => $err_msg . ( $git_failure_msg ? " (Git note: {$git_failure_msg})" : "" ),
+			'status'             => 'error',
+			'details'            => $err_msg,
+			'slug'               => $slug,
+			'old_version'        => $old_version,
+			'target_tag'         => $release_tag,
+			'rollback_performed' => $rollback_performed,
 		];
 	}
 
