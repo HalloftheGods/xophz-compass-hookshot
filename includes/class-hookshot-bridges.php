@@ -342,6 +342,10 @@ class Hookshot_Bridges {
 		$was_active = is_plugin_active( $plugin_file );
 
 		// Backup the existing plugin
+		if ( ! function_exists( 'WP_Filesystem' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/file.php';
+		}
+		WP_Filesystem();
 		global $wp_filesystem;
 		$plugin_dir_path = WP_PLUGIN_DIR . '/' . $slug;
 		$backup_dir_path = WP_PLUGIN_DIR . '/' . $slug . '_hookshot_backup_' . time();
