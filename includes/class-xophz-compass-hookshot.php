@@ -22,6 +22,7 @@ class Xophz_Compass_Hookshot {
 		require_once $dir . 'class-hookshot-transform.php';
 		require_once $dir . 'class-hookshot-health.php';
 		require_once $dir . 'class-hookshot-retry.php';
+		require_once $dir . 'class-hookshot-notifier.php';
 		require_once $dir . 'class-hookshot-bridges.php';
 		require_once $dir . 'class-hookshot-rest-dashboard.php';
 		require_once $dir . 'class-hookshot-gc.php';
@@ -47,6 +48,7 @@ class Xophz_Compass_Hookshot {
 		$dashboard_rest->init();
 
 		Hookshot_Retry::get_instance()->init();
+		Hookshot_Notifier::init();
 
 		$gc = new Hookshot_GC();
 		$gc->init();

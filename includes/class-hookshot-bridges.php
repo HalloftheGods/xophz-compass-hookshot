@@ -87,7 +87,12 @@ class Hookshot_Bridges {
 
 			$hasHandler = isset( $bridge['handler'] ) && is_callable( $bridge['handler'] );
 			if ( $hasHandler ) {
-				call_user_func( $bridge['handler'], $payload, $webhook_id, $config );
+				try {
+					call_user_func( $bridge['handler'], $payload, $webhook_id, $config );
+				} catch ( Throwable $e ) {
+					error_log( sprintf( 'Hookshot Bridge [%s] Execution Error: %s in %s:%d', $bridge_slug, $e->getMessage(), $e->getFile(), $e->getLine() ) );
+					Hookshot_Notifier::notify_failure( $webhook_id, sprintf( "Bridge [%s] Error: %s\nFile: %s:%d", $bridge_slug, $e->getMessage(), $e->getFile(), $e->getLine() ), 'Automated Bridge Engine' );
+				}
 			}
 		}
 	}
@@ -319,6 +324,11 @@ class Hookshot_Bridges {
 		$slug = $repo_name;
 		$rename_filter = function( $source, $remote_source, $upgrader_obj, $hook_extra = null ) use ( $slug ) {
 			global $wp_filesystem;
+			if ( ! is_object( $wp_filesystem ) ) {
+				require_once ABSPATH . 'wp-admin/includes/class-wp-filesystem-base.php';
+				require_once ABSPATH . 'wp-admin/includes/class-wp-filesystem-direct.php';
+				$wp_filesystem = new WP_Filesystem_Direct( null );
+			}
 			$expected_dir = $slug;
 			$source_dir = untrailingslashit( $source );
 			
@@ -342,17 +352,24 @@ class Hookshot_Bridges {
 		$was_active = is_plugin_active( $plugin_file );
 
 		// Backup the existing plugin
-		if ( ! function_exists( 'WP_Filesystem' ) ) {
+		if ( ! function_exists( 'WP_Filesystem' ) || ! function_exists( 'copy_dir' ) ) {
 			require_once ABSPATH . 'wp-admin/includes/file.php';
 		}
 		WP_Filesystem();
 		global $wp_filesystem;
+		if ( ! is_object( $wp_filesystem ) ) {
+			require_once ABSPATH . 'wp-admin/includes/class-wp-filesystem-base.php';
+			require_once ABSPATH . 'wp-admin/includes/class-wp-filesystem-direct.php';
+			$wp_filesystem = new WP_Filesystem_Direct( null );
+		}
+
 		$plugin_dir_path = WP_PLUGIN_DIR . '/' . $slug;
 		$backup_dir_path = WP_PLUGIN_DIR . '/' . $slug . '_hookshot_backup_' . time();
 		$backup_created = false;
 		
 		if ( $wp_filesystem->is_dir( $plugin_dir_path ) ) {
-			$backup_created = $wp_filesystem->copy_dir( $plugin_dir_path, $backup_dir_path );
+			$res = copy_dir( $plugin_dir_path, $backup_dir_path );
+			$backup_created = ! is_wp_error( $res ) && $res !== false;
 		}
 
 		// Run installation. This actually upgrades it if it exists or installs it if it doesn't.

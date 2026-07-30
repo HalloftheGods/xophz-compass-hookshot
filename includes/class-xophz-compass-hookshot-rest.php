@@ -21,72 +21,81 @@ class Xophz_Compass_Hookshot_REST {
 	}
 
 	public function handle_incoming_webhook( WP_REST_Request $request ) {
-		$content_length = isset( $_SERVER['CONTENT_LENGTH'] ) ? (int) $_SERVER['CONTENT_LENGTH'] : 0;
-		
-		$isTooLarge = $content_length > 1048576;
-		if ( $isTooLarge ) {
-			return new WP_REST_Response( [ 'success' => false, 'message' => 'Payload Too Large. Max size is 1MB.' ], 413 );
-		}
+		try {
+			$content_length = isset( $_SERVER['CONTENT_LENGTH'] ) ? (int) $_SERVER['CONTENT_LENGTH'] : 0;
+			
+			$isTooLarge = $content_length > 1048576;
+			if ( $isTooLarge ) {
+				return new WP_REST_Response( [ 'success' => false, 'message' => 'Payload Too Large. Max size is 1MB.' ], 413 );
+			}
 
-		$depth = isset( $_SERVER['HTTP_X_HOOKSHOT_DEPTH'] ) ? (int) $_SERVER['HTTP_X_HOOKSHOT_DEPTH'] : 0;
-		
-		$isLooping = $depth > 3;
-		if ( $isLooping ) {
-			return new WP_REST_Response( [ 'success' => false, 'message' => 'Loop detected. Max depth exceeded.' ], 408 );
-		}
+			$depth = isset( $_SERVER['HTTP_X_HOOKSHOT_DEPTH'] ) ? (int) $_SERVER['HTTP_X_HOOKSHOT_DEPTH'] : 0;
+			
+			$isLooping = $depth > 3;
+			if ( $isLooping ) {
+				return new WP_REST_Response( [ 'success' => false, 'message' => 'Loop detected. Max depth exceeded.' ], 408 );
+			}
 
-		$secret = $request->get_param( 'secret' );
+			$secret = $request->get_param( 'secret' );
 
-		$webhook_id = $this->resolve_webhook( $secret );
+			$webhook_id = $this->resolve_webhook( $secret );
 
-		$isInvalid = is_wp_error( $webhook_id );
-		if ( $isInvalid ) {
-			return new WP_REST_Response( [ 'success' => false, 'message' => 'Invalid or inactive webhook secret.' ], 401 );
-		}
+			$isInvalid = is_wp_error( $webhook_id );
+			if ( $isInvalid ) {
+				return new WP_REST_Response( [ 'success' => false, 'message' => 'Invalid or inactive webhook secret.' ], 401 );
+			}
 
-		$ip_check = $this->check_ip_whitelist( $webhook_id, $request );
-		$isBlocked = is_wp_error( $ip_check );
-		if ( $isBlocked ) {
-			return new WP_REST_Response( [ 'success' => false, 'message' => $ip_check->get_error_message() ], 403 );
-		}
+			$ip_check = $this->check_ip_whitelist( $webhook_id, $request );
+			$isBlocked = is_wp_error( $ip_check );
+			if ( $isBlocked ) {
+				return new WP_REST_Response( [ 'success' => false, 'message' => $ip_check->get_error_message() ], 403 );
+			}
 
-		$rate_check = $this->check_rate_limit( $webhook_id );
-		$isRateLimited = is_wp_error( $rate_check );
-		if ( $isRateLimited ) {
-			return new WP_REST_Response( [ 'success' => false, 'message' => $rate_check->get_error_message() ], 429 );
-		}
+			$rate_check = $this->check_rate_limit( $webhook_id );
+			$isRateLimited = is_wp_error( $rate_check );
+			if ( $isRateLimited ) {
+				return new WP_REST_Response( [ 'success' => false, 'message' => $rate_check->get_error_message() ], 429 );
+			}
 
-		$sig_check = Hookshot_Signature::verify( $request, $webhook_id );
-		$isInvalidSig = is_wp_error( $sig_check );
-		if ( $isInvalidSig ) {
-			Hookshot_Health::record( $webhook_id, false );
+			$sig_check = Hookshot_Signature::verify( $request, $webhook_id );
+			$isInvalidSig = is_wp_error( $sig_check );
+			if ( $isInvalidSig ) {
+				Hookshot_Health::record( $webhook_id, false );
+				return new WP_REST_Response( [
+					'success' => false,
+					'message' => $sig_check->get_error_message(),
+				], $sig_check->get_error_data()['status'] ?? 401 );
+			}
+
+			$payload = $request->get_json_params() ?: $request->get_body_params();
+			$headers = $request->get_headers();
+
+			$hasNoPayload = empty( $payload );
+			if ( $hasNoPayload ) {
+				$raw = $request->get_body();
+				$hasRawBody = ! empty( $raw );
+				if ( $hasRawBody ) {
+					$payload = [ 'raw_body' => $raw ];
+				}
+			}
+
+			$payload = Hookshot_Transform::apply_incoming( $payload, $webhook_id );
+
+			$this->log_webhook( $webhook_id, 'incoming', $payload, $headers );
+
+			Hookshot_Health::record( $webhook_id, true );
+
+			do_action( 'xophz_hookshot_incoming', $payload, $webhook_id );
+
+			return new WP_REST_Response( [ 'success' => true, 'message' => 'Webhook received.' ], 200 );
+		} catch ( Throwable $e ) {
+			error_log( sprintf( 'Hookshot Incoming Webhook Exception: %s in %s:%d', $e->getMessage(), $e->getFile(), $e->getLine() ) );
+			Hookshot_Notifier::notify_failure( $webhook_id ?? 0, sprintf( "%s\nFile: %s:%d", $e->getMessage(), $e->getFile(), $e->getLine() ), 'Incoming REST Endpoint' );
 			return new WP_REST_Response( [
 				'success' => false,
-				'message' => $sig_check->get_error_message(),
-			], $sig_check->get_error_data()['status'] ?? 401 );
+				'message' => 'Internal processing error: ' . $e->getMessage(),
+			], 500 );
 		}
-
-		$payload = $request->get_json_params() ?: $request->get_body_params();
-		$headers = $request->get_headers();
-
-		$hasNoPayload = empty( $payload );
-		if ( $hasNoPayload ) {
-			$raw = $request->get_body();
-			$hasRawBody = ! empty( $raw );
-			if ( $hasRawBody ) {
-				$payload = [ 'raw_body' => $raw ];
-			}
-		}
-
-		$payload = Hookshot_Transform::apply_incoming( $payload, $webhook_id );
-
-		$this->log_webhook( $webhook_id, 'incoming', $payload, $headers );
-
-		Hookshot_Health::record( $webhook_id, true );
-
-		do_action( 'xophz_hookshot_incoming', $payload, $webhook_id );
-
-		return new WP_REST_Response( [ 'success' => true, 'message' => 'Webhook received.' ], 200 );
 	}
 
 	public function handle_verification_challenge( WP_REST_Request $request ) {
