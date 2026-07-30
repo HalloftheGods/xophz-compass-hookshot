@@ -424,9 +424,10 @@ class Hookshot_REST_Dashboard {
 			'payload'      => json_decode( get_post_meta( $post->ID, 'wh_log_payload', true ), true ),
 			'headers'      => json_decode( get_post_meta( $post->ID, 'wh_log_headers', true ), true ),
 			'response'     => get_post_meta( $post->ID, 'wh_log_response', true ),
-			'retry_status' => get_post_meta( $post->ID, 'wh_log_retry_status', true ) ?: null,
-			'retry_count'  => (int) get_post_meta( $post->ID, 'wh_log_retry_count', true ),
-			'retry_error'  => get_post_meta( $post->ID, 'wh_log_retry_last_error', true ) ?: null,
+			'retry_status'   => get_post_meta( $post->ID, 'wh_log_retry_status', true ) ?: null,
+			'retry_count'    => (int) get_post_meta( $post->ID, 'wh_log_retry_count', true ),
+			'retry_error'    => get_post_meta( $post->ID, 'wh_log_retry_last_error', true ) ?: null,
+			'bridge_results' => json_decode( get_post_meta( $post->ID, 'wh_log_bridge_results', true ), true ) ?: null,
 		];
 	}
 

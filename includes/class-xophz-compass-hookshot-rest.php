@@ -81,13 +81,20 @@ class Xophz_Compass_Hookshot_REST {
 
 			$payload = Hookshot_Transform::apply_incoming( $payload, $webhook_id );
 
-			$this->log_webhook( $webhook_id, 'incoming', $payload, $headers );
+			do_action( 'xophz_hookshot_incoming', $payload, $webhook_id );
+
+			global $hookshot_last_bridge_results;
+			$bridge_results = $hookshot_last_bridge_results ?? [];
+
+			$this->log_webhook( $webhook_id, 'incoming', $payload, $headers, 200, $bridge_results );
 
 			Hookshot_Health::record( $webhook_id, true );
 
-			do_action( 'xophz_hookshot_incoming', $payload, $webhook_id );
-
-			return new WP_REST_Response( [ 'success' => true, 'message' => 'Webhook received.' ], 200 );
+			return new WP_REST_Response( [
+				'success' => true,
+				'message' => 'Webhook received and processed.',
+				'bridges' => $bridge_results,
+			], 200 );
 		} catch ( Throwable $e ) {
 			error_log( sprintf( 'Hookshot Incoming Webhook Exception: %s in %s:%d', $e->getMessage(), $e->getFile(), $e->getLine() ) );
 			Hookshot_Notifier::notify_failure( $webhook_id ?? 0, sprintf( "%s\nFile: %s:%d", $e->getMessage(), $e->getFile(), $e->getLine() ), 'Incoming REST Endpoint' );
@@ -184,7 +191,7 @@ class Xophz_Compass_Hookshot_REST {
 		return true;
 	}
 
-	private function log_webhook( $webhook_id, $direction, $payload, $headers, $status_code = 200 ) {
+	private function log_webhook( $webhook_id, $direction, $payload, $headers, $status_code = 200, $bridge_results = [] ) {
 		$log_id = wp_insert_post( [
 			'post_title'  => sprintf( '%s Webhook (%d)', ucfirst( $direction ), $webhook_id ),
 			'post_type'   => 'compass_wh_log',
@@ -198,6 +205,9 @@ class Xophz_Compass_Hookshot_REST {
 			update_post_meta( $log_id, 'wh_log_payload', wp_json_encode( $payload ) );
 			update_post_meta( $log_id, 'wh_log_headers', wp_json_encode( $headers ) );
 			update_post_meta( $log_id, 'wh_log_status', $status_code );
+			if ( ! empty( $bridge_results ) ) {
+				update_post_meta( $log_id, 'wh_log_bridge_results', wp_json_encode( $bridge_results ) );
+			}
 		}
 
 		return $isValid ? $log_id : null;

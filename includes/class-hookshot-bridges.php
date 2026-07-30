@@ -71,14 +71,16 @@ class Hookshot_Bridges {
 
 		$hasNoBridges = empty( $enabled_bridges ) || ! is_array( $enabled_bridges );
 		if ( $hasNoBridges ) {
-			return;
+			return [];
 		}
 
 		$bridge_config = get_post_meta( $webhook_id, 'hookshot_bridge_config', true ) ?: [];
+		$results = [];
 
 		foreach ( $enabled_bridges as $bridge_slug ) {
 			$isRegistered = isset( self::$registered_bridges[ $bridge_slug ] );
 			if ( ! $isRegistered ) {
+				$results[ $bridge_slug ] = [ 'status' => 'skipped', 'details' => 'Bridge not registered.' ];
 				continue;
 			}
 
@@ -88,19 +90,27 @@ class Hookshot_Bridges {
 			$hasHandler = isset( $bridge['handler'] ) && is_callable( $bridge['handler'] );
 			if ( $hasHandler ) {
 				try {
-					call_user_func( $bridge['handler'], $payload, $webhook_id, $config );
+					$res = call_user_func( $bridge['handler'], $payload, $webhook_id, $config );
+					$results[ $bridge_slug ] = is_array( $res ) ? $res : [ 'status' => 'success', 'details' => 'Executed successfully.' ];
 				} catch ( Throwable $e ) {
-					error_log( sprintf( 'Hookshot Bridge [%s] Execution Error: %s in %s:%d', $bridge_slug, $e->getMessage(), $e->getFile(), $e->getLine() ) );
-					Hookshot_Notifier::notify_failure( $webhook_id, sprintf( "Bridge [%s] Error: %s\nFile: %s:%d", $bridge_slug, $e->getMessage(), $e->getFile(), $e->getLine() ), 'Automated Bridge Engine' );
+					$err_details = sprintf( "Bridge [%s] Error: %s in %s:%d", $bridge_slug, $e->getMessage(), $e->getFile(), $e->getLine() );
+					error_log( $err_details );
+					Hookshot_Notifier::notify_failure( $webhook_id, $err_details, 'Automated Bridge Engine' );
+					$results[ $bridge_slug ] = [ 'status' => 'error', 'details' => $e->getMessage() ];
 				}
 			}
 		}
+
+		global $hookshot_last_bridge_results;
+		$hookshot_last_bridge_results = $results;
+
+		return $results;
 	}
 
 	public function bridge_questbook( $payload, $webhook_id, $config ) {
 		$hasNoCRM = ! class_exists( 'Xophz_Compass_Quests_REST' );
 		if ( $hasNoCRM ) {
-			return;
+			return [ 'status' => 'skipped', 'details' => 'Questbook CRM not installed.' ];
 		}
 
 		$email_field = $config['email_field'] ?? 'email';
@@ -111,42 +121,48 @@ class Hookshot_Bridges {
 
 		$hasNoEmail = empty( $email );
 		if ( $hasNoEmail ) {
-			return;
+			return [ 'status' => 'skipped', 'details' => 'No email field found in payload.' ];
 		}
 
 		$name = self::extract_field( $payload, $name_field ) ?: '';
 		$phone = self::extract_field( $payload, $phone_field ) ?: '';
 
+		$api = new Xophz_Compass_Quests_REST();
+
 		$existing = get_posts( [
-			'post_type'      => 'questbook_contact',
+			'post_type'      => 'compass_contact',
 			'posts_per_page' => 1,
-			'meta_key'       => '_qb_raw_email',
+			'meta_key'       => 'contact_email',
 			'meta_value'     => $email,
-			'fields'         => 'ids',
 		] );
 
-		$contactExists = ! empty( $existing );
-		if ( $contactExists ) {
-			return;
+		if ( ! empty( $existing ) ) {
+			$contact_id = $existing[0]->ID;
+			if ( $name ) {
+				update_post_meta( $contact_id, 'contact_name', sanitize_text_field( $name ) );
+			}
+			if ( $phone ) {
+				update_post_meta( $contact_id, 'contact_phone', sanitize_text_field( $phone ) );
+			}
+			return [ 'status' => 'success', 'details' => "Updated Questbook contact ID {$contact_id} for {$email}." ];
 		}
 
 		$contact_id = wp_insert_post( [
 			'post_title'  => $name ?: $email,
-			'post_type'   => 'questbook_contact',
+			'post_type'   => 'compass_contact',
 			'post_status' => 'publish',
 		] );
 
 		$isValid = ! is_wp_error( $contact_id );
 		if ( $isValid ) {
-			update_post_meta( $contact_id, '_qb_raw_email', sanitize_email( $email ) );
-			update_post_meta( $contact_id, '_qb_lead_status', 'New Lead' );
-			update_post_meta( $contact_id, '_qb_source', 'Hookshot Webhook #' . $webhook_id );
-
-			$hasPhone = ! empty( $phone );
-			if ( $hasPhone ) {
-				update_post_meta( $contact_id, '_qb_phone', sanitize_text_field( $phone ) );
-			}
+			update_post_meta( $contact_id, 'contact_email', sanitize_email( $email ) );
+			update_post_meta( $contact_id, 'contact_name', sanitize_text_field( $name ) );
+			update_post_meta( $contact_id, 'contact_phone', sanitize_text_field( $phone ) );
+			update_post_meta( $contact_id, 'contact_source', 'hookshot_webhook' );
+			return [ 'status' => 'success', 'details' => "Created Questbook contact ID {$contact_id} for {$email}." ];
 		}
+
+		return [ 'status' => 'error', 'details' => 'Failed to create Questbook contact post.' ];
 	}
 
 	public function bridge_bombbag( $payload, $webhook_id, $config ) {
@@ -156,7 +172,7 @@ class Hookshot_Bridges {
 
 		$tableExists = $wpdb->get_var( "SHOW TABLES LIKE '{$table}'" ) === $table;
 		if ( ! $tableExists ) {
-			return;
+			return [ 'status' => 'skipped', 'details' => 'Bomb Bag subscribers table does not exist.' ];
 		}
 
 		$email_field = $config['email_field'] ?? 'email';
@@ -164,7 +180,7 @@ class Hookshot_Bridges {
 
 		$hasNoEmail = empty( $email );
 		if ( $hasNoEmail ) {
-			return;
+			return [ 'status' => 'skipped', 'details' => 'No email field found in payload.' ];
 		}
 
 		$first_name = self::extract_field( $payload, $config['first_name_field'] ?? 'first_name' ) ?: '';
@@ -176,7 +192,7 @@ class Hookshot_Bridges {
 		) );
 
 		if ( $alreadyExists ) {
-			return;
+			return [ 'status' => 'skipped', 'details' => "Email {$email} is already subscribed." ];
 		}
 
 		$wpdb->insert( $table, [
@@ -198,6 +214,8 @@ class Hookshot_Bridges {
 				'subscriber_id' => $subscriber_id,
 			] );
 		}
+
+		return [ 'status' => 'success', 'details' => "Subscribed {$email} to Bomb Bag (Subscriber ID: {$subscriber_id})." ];
 	}
 
 	public function bridge_xp( $payload, $webhook_id, $config ) {
@@ -210,12 +228,13 @@ class Hookshot_Bridges {
 
 		$isInvalidGrant = empty( $user_id ) || empty( $xp_amount );
 		if ( $isInvalidGrant ) {
-			return;
+			return [ 'status' => 'skipped', 'details' => 'Invalid user_id or xp_amount in payload.' ];
 		}
 
 		$reason = self::extract_field( $payload, $reason_field ) ?: 'Hookshot Webhook';
 
 		do_action( 'xophz_xp_grant', $user_id, $xp_amount, $reason );
+		return [ 'status' => 'success', 'details' => "Granted {$xp_amount} XP to User ID {$user_id} ({$reason})." ];
 	}
 
 	public function bridge_wp_action( $payload, $webhook_id, $config ) {
@@ -223,27 +242,34 @@ class Hookshot_Bridges {
 
 		$hasNoAction = empty( $action_name );
 		if ( $hasNoAction ) {
-			return;
+			return [ 'status' => 'skipped', 'details' => 'No action_name configured.' ];
 		}
 
 		$is_safe_action = preg_match( '/^[a-z0-9_]+$/i', $action_name );
 		if ( ! $is_safe_action ) {
-			return;
+			return [ 'status' => 'error', 'details' => "Unsafe action_name '{$action_name}'." ];
 		}
 
 		do_action( $action_name, $payload, $webhook_id );
+		return [ 'status' => 'success', 'details' => "Fired WP Action '{$action_name}'." ];
 	}
 
 	public function bridge_github_plugin_release( $payload, $webhook_id, $config ) {
 		// Only run on release published event
 		$action = self::extract_field( $payload, 'action' );
 		if ( $action !== 'published' && $action !== 'released' ) {
-			return;
+			return [
+				'status'  => 'skipped',
+				'details' => "Ignored action '{$action}'. Only 'published' or 'released' triggers updates.",
+			];
 		}
 
 		$repo_name = self::extract_field( $payload, 'repository.name' );
 		if ( empty( $repo_name ) ) {
-			return;
+			return [
+				'status'  => 'skipped',
+				'details' => 'Missing repository name in payload.',
+			];
 		}
 
 		// Optional filter to only update specific plugins if configured
@@ -251,7 +277,10 @@ class Hookshot_Bridges {
 		if ( ! empty( $allowed_plugins ) ) {
 			$allowed_list = array_map( 'trim', explode( ',', $allowed_plugins ) );
 			if ( ! in_array( $repo_name, $allowed_list, true ) ) {
-				return;
+				return [
+					'status'  => 'skipped',
+					'details' => "Repository '{$repo_name}' is not in allowed plugins list ({$allowed_plugins}).",
+				];
 			}
 		}
 		
@@ -259,17 +288,37 @@ class Hookshot_Bridges {
 
 		$release = (object) self::extract_field( $payload, 'release' );
 		if ( empty( $release ) ) {
-			return;
+			return [
+				'status'  => 'skipped',
+				'details' => 'Missing release object in payload.',
+			];
 		}
 
 		$github_token = $config['github_token'] ?? '';
+		if ( empty( $github_token ) ) {
+			if ( defined( 'GITHUB_TOKEN' ) ) {
+				$github_token = GITHUB_TOKEN;
+			} elseif ( defined( 'GITHUB_PA_TOKEN' ) ) {
+				$github_token = GITHUB_PA_TOKEN;
+			} else {
+				$github_token = get_option( 'xophz_compass_bugnet_github_token', '' );
+			}
+		}
+
+		if ( $is_private && empty( $github_token ) ) {
+			return [
+				'status'  => 'error',
+				'details' => "Repository '{$repo_name}' is private, but no GitHub Access Token is configured in Hookshot or COMPASS settings.",
+			];
+		}
+
 		$download_url = '';
 		$assets = $release->assets ?? [];
 		if ( ! empty( $assets ) ) {
 			foreach ( $assets as $asset ) {
 				$asset = (object) $asset;
 				if ( substr( $asset->name ?? '', -4 ) === '.zip' ) {
-					// Always use browser_download_url for public repos to avoid S3 redirect auth rejection bugs
+					// Use API asset URL for private repos with auth token; browser_download_url for public repos
 					$download_url = ( $is_private && ! empty( $github_token ) ) ? $asset->url : $asset->browser_download_url;
 					break;
 				}
@@ -277,16 +326,11 @@ class Hookshot_Bridges {
 		}
 
 		// Strict check: Only proceed if official packaged release zip asset exists
-		if ( empty( $download_url ) && $action !== 'push' ) {
-			return;
-		}
-
-		$plugin_dir = WP_PLUGIN_DIR . '/' . $repo_name;
-		if ( file_exists( $plugin_dir ) && ( is_dir( $plugin_dir . '/.git' ) || is_file( $plugin_dir . '/.git' ) ) ) {
-			exec( 'git -C ' . escapeshellarg( $plugin_dir ) . ' pull origin main 2>&1' );
-			delete_site_transient( 'update_plugins' );
-			delete_transient( 'xophz_gh_rel_' . md5( 'HalloftheGods/' . $repo_name ) );
-			return;
+		if ( empty( $download_url ) ) {
+			return [
+				'status'  => 'skipped',
+				'details' => "No release ZIP asset found for repository '{$repo_name}'.",
+			];
 		}
 
 		require_once ABSPATH . 'wp-admin/includes/file.php';
@@ -309,11 +353,15 @@ class Hookshot_Bridges {
 		
 		$upgrader = new Plugin_Upgrader( $skin );
 
-		// Set up GitHub authentication ONLY for private repo downloads
+		// Set up GitHub authentication ONLY for private repo downloads (stripping on S3 redirects)
 		$auth_filter = function( $args, $url ) use ( $github_token, $is_private ) {
-			if ( $is_private && ! empty( $github_token ) && ( strpos( $url, 'api.github.com' ) !== false || strpos( $url, 'github.com' ) !== false ) ) {
-				$args['headers']['Authorization'] = 'token ' . $github_token;
-				$args['headers']['Accept'] = 'application/octet-stream';
+			if ( $is_private && ! empty( $github_token ) ) {
+				if ( strpos( $url, 'api.github.com' ) !== false ) {
+					$args['headers']['Authorization'] = 'token ' . $github_token;
+					$args['headers']['Accept'] = 'application/octet-stream';
+				} else {
+					unset( $args['headers']['Authorization'] );
+				}
 			}
 			return $args;
 		};
@@ -407,7 +455,18 @@ class Hookshot_Bridges {
 			// Optional: Clear update transients
 			delete_site_transient( 'update_plugins' );
 			delete_transient( 'xophz_gh_rel_' . md5( 'HalloftheGods/' . $slug ) );
+
+			return [
+				'status'  => 'success',
+				'details' => "Plugin '{$slug}' updated successfully from release ZIP asset." . ( $git_failure_msg ? " (Git note: {$git_failure_msg})" : "" ),
+			];
 		}
+
+		$err_msg = is_wp_error( $installed ) ? $installed->get_error_message() : 'Plugin upgrade failed during ZIP installation.';
+		return [
+			'status'  => 'error',
+			'details' => $err_msg . ( $git_failure_msg ? " (Git note: {$git_failure_msg})" : "" ),
+		];
 	}
 
 	private static function extract_field( $payload, $field_path ) {
