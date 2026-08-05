@@ -411,9 +411,12 @@ class Hookshot_Bridges {
 
 		add_filter( 'http_request_args', $auth_filter, 10, 2 );
 
-		// Add rename filter
+		// Add rename filter to normalize unzipped folder name to plugin slug
 		$rename_filter = function( $source, $remote_source, $upgrader_obj, $hook_extra = null ) use ( $slug ) {
 			global $wp_filesystem;
+			if ( is_wp_error( $source ) ) {
+				return $source;
+			}
 			if ( ! is_object( $wp_filesystem ) ) {
 				require_once ABSPATH . 'wp-admin/includes/class-wp-filesystem-base.php';
 				require_once ABSPATH . 'wp-admin/includes/class-wp-filesystem-direct.php';
@@ -421,17 +424,27 @@ class Hookshot_Bridges {
 			}
 			$expected_dir = $slug;
 			$source_dir   = untrailingslashit( $source );
+			$source_base  = basename( $source_dir );
 			
-			if ( basename( $source_dir ) === $expected_dir ) {
+			if ( $source_base === $expected_dir ) {
 				return $source;
 			}
 			
-			$new_source = trailingslashit( $remote_source ) . $expected_dir;
+			$remote_dir = untrailingslashit( $remote_source );
+			$new_source = $remote_dir . '/' . $expected_dir;
+
 			if ( $wp_filesystem->is_dir( $new_source ) ) {
 				$wp_filesystem->delete( $new_source, true );
 			}
 			if ( $wp_filesystem->move( $source, $new_source ) ) {
 				return trailingslashit( $new_source );
+			}
+			if ( function_exists( 'copy_dir' ) ) {
+				$copy_res = copy_dir( $source, $new_source );
+				if ( ! is_wp_error( $copy_res ) && $copy_res !== false ) {
+					$wp_filesystem->delete( $source, true );
+					return trailingslashit( $new_source );
+				}
 			}
 			return $source;
 		};
@@ -459,7 +472,12 @@ class Hookshot_Bridges {
 			}
 		}
 
-		// Run installation. Overwrites existing package safely.
+		// Clean target directory before install if backup exists to avoid collision with submodules or locked files
+		if ( $backup_created && $wp_filesystem->is_dir( $plugin_dir_path ) ) {
+			$wp_filesystem->delete( $plugin_dir_path, true );
+		}
+
+		// Run installation.
 		$args = [
 			'overwrite_package' => true,
 		];
@@ -467,6 +485,21 @@ class Hookshot_Bridges {
 		
 		remove_filter( 'upgrader_source_selection', $rename_filter, 10 );
 		remove_filter( 'http_request_args', $auth_filter, 10 );
+
+		// Check if main file exists, or search for primary plugin PHP file in directory
+		if ( ! $wp_filesystem->is_file( $plugin_file_path ) && $wp_filesystem->is_dir( $plugin_dir_path ) ) {
+			$php_files = glob( $plugin_dir_path . '/*.php' );
+			if ( is_array( $php_files ) ) {
+				foreach ( $php_files as $file ) {
+					$data = get_plugin_data( $file, false, false );
+					if ( ! empty( $data['Name'] ) ) {
+						$plugin_file_path = $file;
+						$plugin_file      = $slug . '/' . basename( $file );
+						break;
+					}
+				}
+			}
+		}
 
 		$install_failed = is_wp_error( $installed ) || ! $installed;
 		$plugin_missing = ! $wp_filesystem->is_file( $plugin_file_path );
@@ -518,7 +551,25 @@ class Hookshot_Bridges {
 			];
 		}
 
-		$err_msg = is_wp_error( $installed ) ? $installed->get_error_message() : 'Plugin upgrade failed during ZIP installation.';
+		// Gather detailed diagnostic error message
+		$diag_errors = [];
+		if ( is_wp_error( $installed ) ) {
+			$diag_errors[] = $installed->get_error_message();
+		}
+		if ( is_object( $skin ) && method_exists( $skin, 'get_errors' ) ) {
+			$skin_errors = $skin->get_errors();
+			if ( is_wp_error( $skin_errors ) && $skin_errors->has_errors() ) {
+				$diag_errors[] = implode( ' | ', $skin_errors->get_error_messages() );
+			}
+		}
+		if ( ! $wp_filesystem->is_file( $plugin_file_path ) ) {
+			$diag_errors[] = "Main plugin file missing at '{$plugin_file}' after extraction.";
+		}
+		if ( empty( $diag_errors ) ) {
+			$diag_errors[] = 'Plugin upgrade failed during ZIP installation.';
+		}
+		$err_msg = implode( ' ; ', array_unique( $diag_errors ) );
+
 		return [
 			'status'             => 'error',
 			'details'            => $err_msg,
