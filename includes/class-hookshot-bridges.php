@@ -493,8 +493,21 @@ class Hookshot_Bridges {
 			}
 		}
 
-		// Clean target directory before install if backup exists to avoid collision with submodules or locked files
-		if ( $backup_created && $wp_filesystem->is_dir( $target_dir_path ) ) {
+		// Check if performing a self-update of Hookshot plugin itself
+		$is_self_update = ! $is_theme && ( $slug === 'xophz-compass-hookshot' || strpos( __FILE__, '/' . $slug . '/' ) !== false );
+
+		if ( $is_self_update && $was_active ) {
+			register_shutdown_function( function() use ( $plugin_file ) {
+				$active_plugins = (array) get_option( 'active_plugins', [] );
+				if ( ! in_array( $plugin_file, $active_plugins, true ) ) {
+					$active_plugins[] = $plugin_file;
+					update_option( 'active_plugins', array_values( array_unique( $active_plugins ) ) );
+				}
+			} );
+		}
+
+		// Clean target directory before install if backup exists (skip for self-update to avoid deleting executing script)
+		if ( ! $is_self_update && $backup_created && $wp_filesystem->is_dir( $target_dir_path ) ) {
 			$wp_filesystem->delete( $target_dir_path, true );
 		}
 
@@ -552,6 +565,12 @@ class Hookshot_Bridges {
 					switch_theme( $slug );
 				} elseif ( function_exists( 'activate_plugin' ) ) {
 					activate_plugin( $plugin_file );
+					// Guarantee persistence in active_plugins WP option
+					$active_plugins = (array) get_option( 'active_plugins', [] );
+					if ( ! in_array( $plugin_file, $active_plugins, true ) ) {
+						$active_plugins[] = $plugin_file;
+						update_option( 'active_plugins', array_values( array_unique( $active_plugins ) ) );
+					}
 				}
 			}
 
