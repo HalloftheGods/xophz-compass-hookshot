@@ -496,18 +496,121 @@ class Hookshot_Bridges {
 		// Check if performing a self-update of Hookshot plugin itself
 		$is_self_update = ! $is_theme && ( $slug === 'xophz-compass-hookshot' || strpos( __FILE__, '/' . $slug . '/' ) !== false );
 
-		if ( $is_self_update && $was_active ) {
-			register_shutdown_function( function() use ( $plugin_file ) {
+		if ( $is_self_update ) {
+			// For self-update, bypass WP_Upgrader because WP_Upgrader explicitly calls deactivate_plugins() and deletes the running plugin directory.
+			$tmp_file = download_url( $download_url );
+			if ( is_wp_error( $tmp_file ) ) {
+				remove_filter( 'upgrader_source_selection', $rename_filter, 10 );
+				remove_filter( 'http_request_args', $auth_filter, 10 );
+				if ( $backup_created ) {
+					$wp_filesystem->delete( $backup_dir_path, true );
+				}
+				return [
+					'status'       => 'error',
+					'details'      => 'Self-update failed to download package: ' . $tmp_file->get_error_message(),
+					'slug'         => $slug,
+					'old_version'  => $old_version,
+					'target_tag'   => $release_tag,
+				];
+			}
+
+			$tmp_dir = WP_CONTENT_DIR . '/upgrade/hookshot_self_upd_' . time();
+			$wp_filesystem->mkdir( $tmp_dir );
+
+			$unzipped = unzip_file( $tmp_file, $tmp_dir );
+			@unlink( $tmp_file );
+
+			if ( is_wp_error( $unzipped ) || ! $unzipped ) {
+				remove_filter( 'upgrader_source_selection', $rename_filter, 10 );
+				remove_filter( 'http_request_args', $auth_filter, 10 );
+				$wp_filesystem->delete( $tmp_dir, true );
+				if ( $backup_created ) {
+					$wp_filesystem->delete( $backup_dir_path, true );
+				}
+				$err = is_wp_error( $unzipped ) ? $unzipped->get_error_message() : 'Failed to unzip self-update package.';
+				return [
+					'status'       => 'error',
+					'details'      => 'Self-update extraction failed: ' . $err,
+					'slug'         => $slug,
+					'old_version'  => $old_version,
+					'target_tag'   => $release_tag,
+				];
+			}
+
+			// Find extracted source directory inside $tmp_dir
+			$entries          = array_diff( scandir( $tmp_dir ), [ '.', '..' ] );
+			$extracted_source = $tmp_dir;
+			if ( count( $entries ) === 1 ) {
+				$first = reset( $entries );
+				if ( is_dir( $tmp_dir . '/' . $first ) ) {
+					$extracted_source = $tmp_dir . '/' . $first;
+				}
+			}
+
+			// Copy files cleanly over existing target directory WITHOUT deleting target directory
+			$copied = copy_dir( $extracted_source, $target_dir_path );
+			$wp_filesystem->delete( $tmp_dir, true );
+
+			remove_filter( 'upgrader_source_selection', $rename_filter, 10 );
+			remove_filter( 'http_request_args', $auth_filter, 10 );
+
+			if ( is_wp_error( $copied ) || $copied === false ) {
+				// Rollback from backup if copy failed
+				if ( $backup_created ) {
+					copy_dir( $backup_dir_path, $target_dir_path );
+					$wp_filesystem->delete( $backup_dir_path, true );
+				}
+				return [
+					'status'             => 'error',
+					'details'            => 'Self-update copy_dir failed to overwrite plugin files.',
+					'slug'               => $slug,
+					'old_version'        => $old_version,
+					'target_tag'         => $release_tag,
+					'rollback_performed' => true,
+				];
+			}
+
+			// Clean backup on success
+			if ( $backup_created ) {
+				$wp_filesystem->delete( $backup_dir_path, true );
+			}
+
+			// Ensure active_plugins option retains self plugin file
+			if ( $was_active ) {
 				$active_plugins = (array) get_option( 'active_plugins', [] );
 				if ( ! in_array( $plugin_file, $active_plugins, true ) ) {
 					$active_plugins[] = $plugin_file;
 					update_option( 'active_plugins', array_values( array_unique( $active_plugins ) ) );
 				}
-			} );
+			}
+
+			// Extract new version
+			$new_version = 'unknown';
+			if ( file_exists( $plugin_file_path ) ) {
+				$new_data    = get_plugin_data( $plugin_file_path, false, false );
+				$new_version = ! empty( $new_data['Version'] ) ? $new_data['Version'] : $release_tag;
+			}
+
+			delete_site_transient( 'update_plugins' );
+			delete_transient( 'xophz_gh_rel_' . md5( 'HalloftheGods/' . $slug ) );
+
+			return [
+				'status'         => 'success',
+				'details'        => "Plugin '{$slug}' (self-update) updated successfully: v{$old_version} -> v{$new_version} (Release {$release_tag}).",
+				'slug'           => $slug,
+				'item_type'      => 'plugin',
+				'old_version'    => $old_version,
+				'new_version'    => $new_version,
+				'upgrade_path'   => "v{$old_version} -> v{$new_version}",
+				'release_tag'    => $release_tag,
+				'was_active'     => $was_active,
+				'is_active'      => is_plugin_active( $plugin_file ),
+				'backups_clean'  => true,
+			];
 		}
 
-		// Clean target directory before install if backup exists (skip for self-update to avoid deleting executing script)
-		if ( ! $is_self_update && $backup_created && $wp_filesystem->is_dir( $target_dir_path ) ) {
+		// Clean target directory before install if backup exists
+		if ( $backup_created && $wp_filesystem->is_dir( $target_dir_path ) ) {
 			$wp_filesystem->delete( $target_dir_path, true );
 		}
 
