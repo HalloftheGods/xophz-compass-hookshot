@@ -7,6 +7,53 @@ class Hookshot_Bridges {
 	public function init() {
 		add_action( 'init', [ $this, 'register_default_bridges' ], 20 );
 		add_action( 'xophz_hookshot_incoming', [ $this, 'route_incoming' ], 10, 2 );
+		add_filter( 'compass_abilities_registry', [ $this, 'register_hookshot_abilities' ] );
+		add_action( 'wp_abilities_init', [ $this, 'register_wp_abilities' ] );
+	}
+
+	public function register_hookshot_abilities( $abilities ) {
+		if ( ! is_array( $abilities ) ) {
+			$abilities = [];
+		}
+
+		$abilities[] = [
+			'id'          => 'compass/trigger_hookshot_deploy',
+			'name'        => 'Trigger Hookshot Deployment',
+			'plugin'      => 'xophz-compass-hookshot',
+			'category'    => 'DevOps',
+			'description' => 'Triggers an automated GitHub deployment/update via Hookshot bridge.',
+			'parameters'  => [
+				'plugin_slug' => [ 'type' => 'string', 'required' => true, 'description' => 'Target plugin or theme slug' ],
+				'version'     => [ 'type' => 'string', 'required' => false, 'description' => 'Target release tag' ],
+			],
+		];
+
+		$abilities[] = [
+			'id'          => 'compass/list_webhooks',
+			'name'        => 'List Active Hookshot Webhooks',
+			'plugin'      => 'xophz-compass-hookshot',
+			'category'    => 'DevOps',
+			'description' => 'Retrieves all registered webhook endpoints and integration bridges.',
+			'parameters'  => [],
+		];
+
+		return $abilities;
+	}
+
+	public function register_wp_abilities() {
+		if ( function_exists( 'wp_register_ability' ) ) {
+			wp_register_ability( 'compass/trigger_hookshot_deploy', [
+				'label'       => __( 'Trigger Hookshot Deployment', 'xophz-compass-hookshot' ),
+				'description' => __( 'Triggers automated deployment via Hookshot.', 'xophz-compass-hookshot' ),
+				'category'    => 'devops',
+			] );
+
+			wp_register_ability( 'compass/list_webhooks', [
+				'label'       => __( 'List Active Webhooks', 'xophz-compass-hookshot' ),
+				'description' => __( 'Lists active webhooks and bridges.', 'xophz-compass-hookshot' ),
+				'category'    => 'devops',
+			] );
+		}
 	}
 
 	public function register_default_bridges() {
