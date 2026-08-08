@@ -519,6 +519,20 @@ class Hookshot_Bridges {
 		
 		add_filter( 'upgrader_source_selection', $rename_filter, 10, 4 );
 
+		// Pre-flight check: Download and verify release ZIP package BEFORE creating backups or touching plugin files
+		$tmp_download = download_url( $download_url );
+		if ( is_wp_error( $tmp_download ) ) {
+			remove_filter( 'upgrader_source_selection', $rename_filter, 10 );
+			remove_filter( 'http_request_args', $auth_filter, 10 );
+			return [
+				'status'      => 'error',
+				'details'     => 'Failed to download release package (HTTP 404 or network error): ' . $tmp_download->get_error_message(),
+				'slug'        => $slug,
+				'old_version' => $old_version,
+				'target_tag'  => $release_tag,
+			];
+		}
+
 		// Create backup of existing item
 		$backup_dir_path = $base_dir_path . '/' . $slug . '_hookshot_backup_' . time();
 		$backup_created  = false;
@@ -528,6 +542,7 @@ class Hookshot_Bridges {
 			$backup_created = ! is_wp_error( $res ) && $res !== false;
 			
 			if ( ! $backup_created ) {
+				@unlink( $tmp_download );
 				remove_filter( 'upgrader_source_selection', $rename_filter, 10 );
 				remove_filter( 'http_request_args', $auth_filter, 10 );
 				return [
@@ -544,22 +559,7 @@ class Hookshot_Bridges {
 		$is_self_update = ! $is_theme && ( $slug === 'xophz-compass-hookshot' || strpos( __FILE__, '/' . $slug . '/' ) !== false );
 
 		if ( $is_self_update ) {
-			// For self-update, bypass WP_Upgrader because WP_Upgrader explicitly calls deactivate_plugins() and deletes the running plugin directory.
-			$tmp_file = download_url( $download_url );
-			if ( is_wp_error( $tmp_file ) ) {
-				remove_filter( 'upgrader_source_selection', $rename_filter, 10 );
-				remove_filter( 'http_request_args', $auth_filter, 10 );
-				if ( $backup_created ) {
-					$wp_filesystem->delete( $backup_dir_path, true );
-				}
-				return [
-					'status'       => 'error',
-					'details'      => 'Self-update failed to download package: ' . $tmp_file->get_error_message(),
-					'slug'         => $slug,
-					'old_version'  => $old_version,
-					'target_tag'   => $release_tag,
-				];
-			}
+			$tmp_file = $tmp_download;
 
 			$tmp_dir = WP_CONTENT_DIR . '/upgrade/hookshot_self_upd_' . time();
 			$wp_filesystem->mkdir( $tmp_dir );
@@ -661,11 +661,12 @@ class Hookshot_Bridges {
 			$wp_filesystem->delete( $target_dir_path, true );
 		}
 
-		// Run installation.
+		// Run installation using pre-downloaded package.
 		$args = [
 			'overwrite_package' => true,
 		];
-		$installed = $upgrader->install( $download_url, $args );
+		$installed = $upgrader->install( $tmp_download, $args );
+		@unlink( $tmp_download );
 		
 		remove_filter( 'upgrader_source_selection', $rename_filter, 10 );
 		remove_filter( 'http_request_args', $auth_filter, 10 );
