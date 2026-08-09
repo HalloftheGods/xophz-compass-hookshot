@@ -13,7 +13,7 @@ class Hookshot_REST_Dashboard {
 			[
 				'methods'             => WP_REST_Server::READABLE,
 				'callback'            => [ $this, 'list_webhooks' ],
-				'permission_callback' => [ $this, 'check_admin' ],
+				'permission_callback' => [ $this, 'check_read' ],
 			],
 			[
 				'methods'             => WP_REST_Server::CREATABLE,
@@ -26,7 +26,7 @@ class Hookshot_REST_Dashboard {
 			[
 				'methods'             => WP_REST_Server::READABLE,
 				'callback'            => [ $this, 'get_webhook' ],
-				'permission_callback' => [ $this, 'check_admin' ],
+				'permission_callback' => [ $this, 'check_read' ],
 			],
 			[
 				'methods'             => WP_REST_Server::EDITABLE,
@@ -49,19 +49,19 @@ class Hookshot_REST_Dashboard {
 		register_rest_route( self::NAMESPACE, '/webhooks/(?P<id>\d+)/logs', [
 			'methods'             => WP_REST_Server::READABLE,
 			'callback'            => [ $this, 'get_logs' ],
-			'permission_callback' => [ $this, 'check_admin' ],
+			'permission_callback' => [ $this, 'check_read' ],
 		] );
 
 		register_rest_route( self::NAMESPACE, '/webhooks/(?P<id>\d+)/health', [
 			'methods'             => WP_REST_Server::READABLE,
 			'callback'            => [ $this, 'get_health' ],
-			'permission_callback' => [ $this, 'check_admin' ],
+			'permission_callback' => [ $this, 'check_read' ],
 		] );
 
 		register_rest_route( self::NAMESPACE, '/dead-letters', [
 			'methods'             => WP_REST_Server::READABLE,
 			'callback'            => [ $this, 'list_dead_letters' ],
-			'permission_callback' => [ $this, 'check_admin' ],
+			'permission_callback' => [ $this, 'check_read' ],
 		] );
 
 		register_rest_route( self::NAMESPACE, '/dead-letters/(?P<id>\d+)/retry', [
@@ -73,30 +73,34 @@ class Hookshot_REST_Dashboard {
 		register_rest_route( self::NAMESPACE, '/stats', [
 			'methods'             => WP_REST_Server::READABLE,
 			'callback'            => [ $this, 'get_stats' ],
-			'permission_callback' => [ $this, 'check_admin' ],
+			'permission_callback' => [ $this, 'check_read' ],
 		] );
 
 		register_rest_route( self::NAMESPACE, '/bridges', [
 			'methods'             => WP_REST_Server::READABLE,
 			'callback'            => [ $this, 'get_bridges' ],
-			'permission_callback' => [ $this, 'check_admin' ],
+			'permission_callback' => [ $this, 'check_read' ],
 		] );
 
 		register_rest_route( self::NAMESPACE, '/presets', [
 			'methods'             => WP_REST_Server::READABLE,
 			'callback'            => [ $this, 'get_presets' ],
-			'permission_callback' => [ $this, 'check_admin' ],
+			'permission_callback' => [ $this, 'check_read' ],
 		] );
 
 		register_rest_route( self::NAMESPACE, '/auth-types', [
 			'methods'             => WP_REST_Server::READABLE,
 			'callback'            => [ $this, 'get_auth_types' ],
-			'permission_callback' => [ $this, 'check_admin' ],
+			'permission_callback' => [ $this, 'check_read' ],
 		] );
 	}
 
 	public function check_admin() {
 		return current_user_can( 'manage_options' );
+	}
+
+	public function check_read() {
+		return is_user_logged_in() || current_user_can( 'manage_options' );
 	}
 
 	public function list_webhooks( WP_REST_Request $request ) {

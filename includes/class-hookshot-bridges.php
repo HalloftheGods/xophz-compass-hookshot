@@ -154,63 +154,68 @@ class Hookshot_Bridges {
 		return $results;
 	}
 
-	public function bridge_questbook( $payload, $webhook_id, $config ) {
-		$hasNoCRM = ! class_exists( 'Xophz_Compass_Quests_REST' );
-		if ( $hasNoCRM ) {
-			return [ 'status' => 'skipped', 'details' => 'Questbook CRM not installed.' ];
-		}
+    public function bridge_questbook( $payload, $webhook_id, $config ) {
+        global $wpdb;
+        $table = $wpdb->prefix . 'xophz_qb_contacts';
 
-		$email_field = $config['email_field'] ?? 'email';
-		$name_field = $config['name_field'] ?? 'name';
-		$phone_field = $config['phone_field'] ?? 'phone';
+        $tableExists = $wpdb->get_var( "SHOW TABLES LIKE '{$table}'" ) === $table;
+        if ( ! $tableExists ) {
+            return [ 'status' => 'skipped', 'details' => 'Questbook CRM Custom Tables not installed.' ];
+        }
 
-		$email = self::extract_field( $payload, $email_field );
+        $email_field = $config['email_field'] ?? 'email';
+        $name_field = $config['name_field'] ?? 'name';
+        $phone_field = $config['phone_field'] ?? 'phone';
 
-		$hasNoEmail = empty( $email );
-		if ( $hasNoEmail ) {
-			return [ 'status' => 'skipped', 'details' => 'No email field found in payload.' ];
-		}
+        $email = self::extract_field( $payload, $email_field );
 
-		$name = self::extract_field( $payload, $name_field ) ?: '';
-		$phone = self::extract_field( $payload, $phone_field ) ?: '';
+        $hasNoEmail = empty( $email );
+        if ( $hasNoEmail ) {
+            return [ 'status' => 'skipped', 'details' => 'No email field found in payload.' ];
+        }
 
-		$api = new Xophz_Compass_Quests_REST();
+        $name = self::extract_field( $payload, $name_field ) ?: '';
+        $phone = self::extract_field( $payload, $phone_field ) ?: '';
+        
+        $name_parts = explode(' ', $name, 2);
+        $first_name = $name_parts[0] ?: 'New';
+        $last_name = $name_parts[1] ?? 'Lead';
 
-		$existing = get_posts( [
-			'post_type'      => 'compass_contact',
-			'posts_per_page' => 1,
-			'meta_key'       => 'contact_email',
-			'meta_value'     => $email,
-		] );
+        $existing = $wpdb->get_row( $wpdb->prepare( "SELECT id FROM {$table} WHERE email = %s LIMIT 1", sanitize_email($email) ) );
 
-		if ( ! empty( $existing ) ) {
-			$contact_id = $existing[0]->ID;
-			if ( $name ) {
-				update_post_meta( $contact_id, 'contact_name', sanitize_text_field( $name ) );
-			}
-			if ( $phone ) {
-				update_post_meta( $contact_id, 'contact_phone', sanitize_text_field( $phone ) );
-			}
-			return [ 'status' => 'success', 'details' => "Updated Questbook contact ID {$contact_id} for {$email}." ];
-		}
+        if ( $existing ) {
+            $contact_id = $existing->id;
+            $update_data = [];
+            if ( $name ) {
+                $update_data['first_name'] = sanitize_text_field( $first_name );
+                $update_data['last_name']  = sanitize_text_field( $last_name );
+            }
+            if ( $phone ) {
+                $update_data['phone'] = sanitize_text_field( $phone );
+            }
+            if ( !empty($update_data) ) {
+                $wpdb->update( $table, $update_data, ['id' => $contact_id] );
+            }
+            return [ 'status' => 'success', 'details' => "Updated Questbook contact ID {$contact_id} for {$email}." ];
+        }
 
-		$contact_id = wp_insert_post( [
-			'post_title'  => $name ?: $email,
-			'post_type'   => 'compass_contact',
-			'post_status' => 'publish',
-		] );
+        $result = $wpdb->insert( $table, [
+            'first_name'  => sanitize_text_field( $first_name ),
+            'last_name'   => sanitize_text_field( $last_name ),
+            'email'       => sanitize_email( $email ),
+            'phone'       => sanitize_text_field( $phone ),
+            'lead_status' => 'New Lead',
+            'source'      => 'hookshot_webhook',
+            'created_at'  => current_time( 'mysql' ),
+        ] );
 
-		$isValid = ! is_wp_error( $contact_id );
-		if ( $isValid ) {
-			update_post_meta( $contact_id, 'contact_email', sanitize_email( $email ) );
-			update_post_meta( $contact_id, 'contact_name', sanitize_text_field( $name ) );
-			update_post_meta( $contact_id, 'contact_phone', sanitize_text_field( $phone ) );
-			update_post_meta( $contact_id, 'contact_source', 'hookshot_webhook' );
-			return [ 'status' => 'success', 'details' => "Created Questbook contact ID {$contact_id} for {$email}." ];
-		}
+        if ( $result ) {
+            $contact_id = $wpdb->insert_id;
+            return [ 'status' => 'success', 'details' => "Created Questbook contact ID {$contact_id} for {$email}." ];
+        }
 
-		return [ 'status' => 'error', 'details' => 'Failed to create Questbook contact post.' ];
-	}
+        return [ 'status' => 'error', 'details' => 'Failed to create Questbook contact in custom table.' ];
+    }
 
 	public function bridge_bombbag( $payload, $webhook_id, $config ) {
 		global $wpdb;
