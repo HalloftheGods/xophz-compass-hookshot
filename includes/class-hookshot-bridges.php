@@ -307,6 +307,14 @@ class Hookshot_Bridges {
 	}
 
 	public function bridge_github_plugin_release( $payload, $webhook_id, $config ) {
+		// Raise execution time & memory limits for large ZIP package downloads (e.g. 80MB+)
+		if ( function_exists( 'set_time_limit' ) ) {
+			@set_time_limit( 900 );
+		}
+		if ( function_exists( 'wp_raise_memory_limit' ) ) {
+			@wp_raise_memory_limit( 'admin' );
+		}
+
 		$action = self::extract_field( $payload, 'action' ) ?: 'unknown';
 
 		// Step 1: Action Filtering - restrict to 'published' and report non-trigger actions cleanly
@@ -501,6 +509,7 @@ class Hookshot_Bridges {
 
 		// Set up GitHub authentication ONLY for private repo downloads (stripping on S3 redirects)
 		$auth_filter = function( $args, $url ) use ( $github_token, $is_private ) {
+			$args['timeout'] = 900; // Allow 15-minute timeout for large ~80MB+ ZIP downloads
 			if ( $is_private && ! empty( $github_token ) ) {
 				if ( strpos( $url, 'api.github.com' ) !== false ) {
 					$args['headers']['Authorization'] = 'token ' . $github_token;
@@ -555,7 +564,7 @@ class Hookshot_Bridges {
 		add_filter( 'upgrader_source_selection', $rename_filter, 10, 4 );
 
 		// Pre-flight check: Download and verify release ZIP package BEFORE creating backups or touching plugin files
-		$tmp_download = download_url( $download_url );
+		$tmp_download = download_url( $download_url, 900 );
 		if ( is_wp_error( $tmp_download ) ) {
 			remove_filter( 'upgrader_source_selection', $rename_filter, 10 );
 			remove_filter( 'http_request_args', $auth_filter, 10 );
@@ -669,15 +678,6 @@ class Hookshot_Bridges {
 			// Invalidate OPcache on self-update
 			if ( function_exists( 'opcache_invalidate' ) && file_exists( $plugin_file_path ) ) {
 				@opcache_invalidate( $plugin_file_path, true );
-			}
-
-			// Ensure active_plugins option retains self plugin file
-			if ( $was_active ) {
-				$active_plugins = (array) get_option( 'active_plugins', [] );
-				if ( ! in_array( $plugin_file, $active_plugins, true ) ) {
-					$active_plugins[] = $plugin_file;
-					update_option( 'active_plugins', array_values( array_unique( $active_plugins ) ) );
-				}
 			}
 
 			// Extract new version cleanly after OPcache invalidation
@@ -846,6 +846,15 @@ class Hookshot_Bridges {
 			$skin_errors = $skin->get_errors();
 			if ( is_wp_error( $skin_errors ) && $skin_errors->has_errors() ) {
 				$diag_errors[] = implode( ' | ', $skin_errors->get_error_messages() );
+			}
+		}
+		if ( is_object( $skin ) && method_exists( $skin, 'get_upgrade_messages' ) ) {
+			$skin_msgs = $skin->get_upgrade_messages();
+			if ( ! empty( $skin_msgs ) && is_array( $skin_msgs ) ) {
+				$clean_msgs = array_filter( array_map( 'strip_tags', $skin_msgs ) );
+				if ( ! empty( $clean_msgs ) ) {
+					$diag_errors[] = implode( ' | ', $clean_msgs );
+				}
 			}
 		}
 		if ( $item_missing ) {
