@@ -46,6 +46,12 @@ class Hookshot_REST_Dashboard {
 			'permission_callback' => [ $this, 'check_admin' ],
 		] );
 
+		register_rest_route( self::NAMESPACE, '/logs', [
+			'methods'             => WP_REST_Server::READABLE,
+			'callback'            => [ $this, 'get_logs' ],
+			'permission_callback' => [ $this, 'check_read' ],
+		] );
+
 		register_rest_route( self::NAMESPACE, '/webhooks/(?P<id>\d+)/logs', [
 			'methods'             => WP_REST_Server::READABLE,
 			'callback'            => [ $this, 'get_logs' ],
@@ -258,18 +264,23 @@ class Hookshot_REST_Dashboard {
 
 	public function get_logs( WP_REST_Request $request ) {
 		$webhook_id = (int) $request->get_param( 'id' );
-		$per_page = (int) ( $request->get_param( 'per_page' ) ?: 20 );
-		$page = (int) ( $request->get_param( 'page' ) ?: 1 );
+		$per_page   = (int) ( $request->get_param( 'per_page' ) ?: 20 );
+		$page       = (int) ( $request->get_param( 'page' ) ?: 1 );
 
-		$query = new WP_Query( [
+		$args = [
 			'post_type'      => 'compass_wh_log',
 			'posts_per_page' => $per_page,
 			'paged'          => $page,
 			'orderby'        => 'date',
 			'order'          => 'DESC',
-			'meta_key'       => 'wh_log_parent_id',
-			'meta_value'     => $webhook_id,
-		] );
+		];
+
+		if ( $webhook_id > 0 ) {
+			$args['meta_key']   = 'wh_log_parent_id';
+			$args['meta_value'] = $webhook_id;
+		}
+
+		$query = new WP_Query( $args );
 
 		$logs = array_map( [ $this, 'format_log' ], $query->posts );
 
