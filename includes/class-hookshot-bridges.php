@@ -307,12 +307,24 @@ class Hookshot_Bridges {
 	}
 
 	public function bridge_github_plugin_release( $payload, $webhook_id, $config ) {
-		// Only run on release published event
-		$action = self::extract_field( $payload, 'action' );
-		if ( $action !== 'published' && $action !== 'released' ) {
+		$action = self::extract_field( $payload, 'action' ) ?: 'unknown';
+
+		// Step 1: Action Filtering - restrict to 'published' and report non-trigger actions cleanly
+		if ( $action !== 'published' ) {
+			$action_descriptions = [
+				'created'     => 'Release draft/record created in GitHub',
+				'edited'      => 'Release details modified in GitHub',
+				'released'    => 'Duplicate release action (handled via primary published event)',
+				'deleted'     => 'Release removed from GitHub',
+				'prereleased' => 'Pre-release published in GitHub',
+				'unpublished' => 'Release unpublished in GitHub',
+			];
+			$desc = $action_descriptions[ $action ] ?? "GitHub release event '{$action}'";
 			return [
 				'status'  => 'skipped',
-				'details' => "Ignored action '{$action}'. Only 'published' or 'released' triggers updates.",
+				'step'    => 'filter_action',
+				'action'  => $action,
+				'details' => "Step skipped: {$desc}. Updates trigger exclusively on 'published' events.",
 			];
 		}
 
@@ -320,11 +332,39 @@ class Hookshot_Bridges {
 		if ( empty( $repo_name ) ) {
 			return [
 				'status'  => 'skipped',
+				'step'    => 'validate_payload',
 				'details' => 'Missing repository name in payload.',
 			];
 		}
 
 		$slug = strtolower( $repo_name );
+
+		$release = (object) ( self::extract_field( $payload, 'release' ) ?: [] );
+		if ( empty( $release ) ) {
+			return [
+				'status'  => 'skipped',
+				'step'    => 'validate_payload',
+				'details' => 'Missing release object in payload.',
+				'slug'    => $slug,
+			];
+		}
+
+		$release_tag = $release->tag_name ?? $release->name ?? 'unknown';
+
+		// Step 2: Transient Deduplication Lock (60-second window per release tag)
+		if ( ! empty( $slug ) && ! empty( $release_tag ) ) {
+			$lock_key = 'xophz_gh_rel_lock_' . md5( $slug . '_' . $release_tag );
+			if ( get_transient( $lock_key ) ) {
+				return [
+					'status'      => 'skipped',
+					'step'        => 'deduplication',
+					'details'     => "Step skipped: Duplicate release update request for {$slug} @ {$release_tag} received within lock window.",
+					'slug'        => $slug,
+					'release_tag' => $release_tag,
+				];
+			}
+			set_transient( $lock_key, time(), 60 );
+		}
 
 		// Optional filter to only update specific plugins if configured
 		$allowed_plugins = $config['allowed_plugins'] ?? '';
@@ -333,6 +373,7 @@ class Hookshot_Bridges {
 			if ( ! in_array( $repo_name, $allowed_list, true ) && ! in_array( $slug, $allowed_list, true ) ) {
 				return [
 					'status'  => 'skipped',
+					'step'    => 'allowed_plugins',
 					'details' => "Repository '{$repo_name}' is not in allowed plugins list ({$allowed_plugins}).",
 					'slug'    => $slug,
 				];
@@ -340,17 +381,6 @@ class Hookshot_Bridges {
 		}
 		
 		$is_private = self::extract_field( $payload, 'repository.private' );
-
-		$release = (object) self::extract_field( $payload, 'release' );
-		if ( empty( $release ) ) {
-			return [
-				'status'  => 'skipped',
-				'details' => 'Missing release object in payload.',
-				'slug'    => $slug,
-			];
-		}
-
-		$release_tag = $release->tag_name ?? $release->name ?? 'unknown';
 
 		$github_token = $config['github_token'] ?? '';
 		if ( empty( $github_token ) ) {
@@ -636,7 +666,21 @@ class Hookshot_Bridges {
 				}
 			}
 
-			// Extract new version
+			// Invalidate OPcache on self-update
+			if ( function_exists( 'opcache_invalidate' ) && file_exists( $plugin_file_path ) ) {
+				@opcache_invalidate( $plugin_file_path, true );
+			}
+
+			// Ensure active_plugins option retains self plugin file
+			if ( $was_active ) {
+				$active_plugins = (array) get_option( 'active_plugins', [] );
+				if ( ! in_array( $plugin_file, $active_plugins, true ) ) {
+					$active_plugins[] = $plugin_file;
+					update_option( 'active_plugins', array_values( array_unique( $active_plugins ) ) );
+				}
+			}
+
+			// Extract new version cleanly after OPcache invalidation
 			$new_version = 'unknown';
 			if ( file_exists( $plugin_file_path ) ) {
 				$new_data    = get_plugin_data( $plugin_file_path, false, false );
@@ -648,6 +692,7 @@ class Hookshot_Bridges {
 
 			return [
 				'status'         => 'success',
+				'step'           => 'complete',
 				'details'        => "Plugin '{$slug}' (self-update) updated successfully: v{$old_version} -> v{$new_version} (Release {$release_tag}).",
 				'slug'           => $slug,
 				'item_type'      => 'plugin',
@@ -676,6 +721,16 @@ class Hookshot_Bridges {
 		remove_filter( 'upgrader_source_selection', $rename_filter, 10 );
 		remove_filter( 'http_request_args', $auth_filter, 10 );
 
+		// Invalidate OPcache so PHP loads newly written files from disk immediately
+		if ( function_exists( 'opcache_invalidate' ) ) {
+			if ( file_exists( $plugin_file_path ) ) {
+				@opcache_invalidate( $plugin_file_path, true );
+			}
+			if ( $is_theme && file_exists( $style_css_path ) ) {
+				@opcache_invalidate( $style_css_path, true );
+			}
+		}
+
 		// Check entry point existence after extraction
 		if ( $is_theme ) {
 			$item_missing = ! $wp_filesystem->is_file( $style_css_path );
@@ -696,32 +751,16 @@ class Hookshot_Bridges {
 			$item_missing = ! $wp_filesystem->is_file( $plugin_file_path );
 		}
 
-		$install_failed = is_wp_error( $installed ) || ! $installed;
-
-		$rollback_performed = false;
-		if ( $backup_created ) {
-			if ( $install_failed || $item_missing ) {
-				// Rollback
-				if ( $wp_filesystem->is_dir( $target_dir_path ) ) {
-					$wp_filesystem->delete( $target_dir_path, true );
-				}
-				$wp_filesystem->move( $backup_dir_path, $target_dir_path );
-				$installed          = false;
-				$item_missing       = false;
-				$rollback_performed = true;
-			} else {
-				// Delete backup on success
-				$wp_filesystem->delete( $backup_dir_path, true );
-			}
-		}
-
-		if ( ! is_wp_error( $installed ) && $installed && ! $item_missing ) {
-			if ( $was_active ) {
-				if ( $is_theme && function_exists( 'switch_theme' ) ) {
-					switch_theme( $slug );
-				} elseif ( function_exists( 'activate_plugin' ) ) {
-					activate_plugin( $plugin_file );
-					// Guarantee persistence in active_plugins WP option
+		// Reactivation & error interception
+		$activation_error = null;
+		if ( ! is_wp_error( $installed ) && $installed && ! $item_missing && $was_active ) {
+			if ( $is_theme && function_exists( 'switch_theme' ) ) {
+				switch_theme( $slug );
+			} elseif ( function_exists( 'activate_plugin' ) ) {
+				$act_res = activate_plugin( $plugin_file );
+				if ( is_wp_error( $act_res ) ) {
+					$activation_error = $act_res->get_error_message();
+				} else {
 					$active_plugins = (array) get_option( 'active_plugins', [] );
 					if ( ! in_array( $plugin_file, $active_plugins, true ) ) {
 						$active_plugins[] = $plugin_file;
@@ -729,8 +768,35 @@ class Hookshot_Bridges {
 					}
 				}
 			}
+		}
 
-			// Extract new version
+		$install_failed = is_wp_error( $installed ) || ! $installed || ! empty( $activation_error );
+
+		// Self-healing Rollback Execution
+		$rollback_performed = false;
+		if ( $backup_created ) {
+			if ( $install_failed || $item_missing ) {
+				if ( $wp_filesystem->is_dir( $target_dir_path ) ) {
+					$wp_filesystem->delete( $target_dir_path, true );
+				}
+				$wp_filesystem->move( $backup_dir_path, $target_dir_path );
+				if ( $was_active && ! $is_theme && function_exists( 'activate_plugin' ) ) {
+					@activate_plugin( $plugin_file );
+				}
+				$installed          = false;
+				$item_missing       = false;
+				$rollback_performed = true;
+
+				$roll_reason = $activation_error ? "Activation failed: {$activation_error}" : 'Package extraction/installation failed.';
+				Hookshot_Notifier::notify_failure( $webhook_id, "Self-healing rollback triggered for {$slug}: {$roll_reason}", 'GitHub Release Bridge' );
+			} else {
+				// Delete backup on verified clean installation
+				$wp_filesystem->delete( $backup_dir_path, true );
+			}
+		}
+
+		if ( ! is_wp_error( $installed ) && $installed && ! $item_missing ) {
+			// Extract new version with refreshed OPcache
 			$new_version = 'unknown';
 			if ( $is_theme ) {
 				if ( function_exists( 'wp_get_theme' ) ) {
@@ -754,6 +820,7 @@ class Hookshot_Bridges {
 
 			return [
 				'status'         => 'success',
+				'step'           => 'complete',
 				'details'        => "{$item_type} '{$slug}' updated successfully: v{$old_version} -> v{$new_version} (Release {$release_tag}).",
 				'slug'           => $slug,
 				'item_type'      => $is_theme ? 'theme' : 'plugin',
@@ -772,6 +839,9 @@ class Hookshot_Bridges {
 		if ( is_wp_error( $installed ) ) {
 			$diag_errors[] = $installed->get_error_message();
 		}
+		if ( ! empty( $activation_error ) ) {
+			$diag_errors[] = "Plugin activation error: {$activation_error}";
+		}
 		if ( is_object( $skin ) && method_exists( $skin, 'get_errors' ) ) {
 			$skin_errors = $skin->get_errors();
 			if ( is_wp_error( $skin_errors ) && $skin_errors->has_errors() ) {
@@ -789,6 +859,7 @@ class Hookshot_Bridges {
 
 		return [
 			'status'             => 'error',
+			'step'               => 'installation_failed',
 			'details'            => $err_msg,
 			'slug'               => $slug,
 			'item_type'          => $is_theme ? 'theme' : 'plugin',
