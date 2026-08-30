@@ -95,10 +95,10 @@ class Hookshot_Bridges {
 
 		self::register( 'github_plugin_release', [
 			'name'        => 'GitHub Plugin Release',
-			'description' => 'Auto-update a plugin when a GitHub release is published.',
+			'description' => 'Auto-update a plugin, mu-plugin, or theme when a GitHub release is published.',
 			'icon'        => 'fab fa-github',
 			'category'    => 'DevOps',
-			'fields'      => [ 'allowed_plugins', 'github_token' ],
+			'fields'      => [ 'allowed_plugins', 'mu_plugins', 'github_token' ],
 			'handler'     => [ $this, 'bridge_github_plugin_release' ],
 		] );
 
@@ -455,13 +455,26 @@ class Hookshot_Bridges {
 			$wp_filesystem = new WP_Filesystem_Direct( null );
 		}
 
-		// Detect whether target release is a WordPress theme or plugin
-		$theme_root = function_exists( 'get_theme_root' ) ? get_theme_root() : WP_CONTENT_DIR . '/themes';
-		$is_theme   = file_exists( $theme_root . '/' . $slug . '/style.css' )
-		           || ( strpos( $slug, 'theme' ) !== false )
-		           || ( strpos( $slug, '-wp-' ) !== false && ! file_exists( WP_PLUGIN_DIR . '/' . $slug ) );
+		// Detect whether target release is a WordPress mu-plugin, theme, or regular plugin
+		$mu_plugin_dir = defined( 'WPMU_PLUGIN_DIR' ) ? WPMU_PLUGIN_DIR : WP_CONTENT_DIR . '/mu-plugins';
+		$theme_root    = function_exists( 'get_theme_root' ) ? get_theme_root() : WP_CONTENT_DIR . '/themes';
 
-		$base_dir_path   = $is_theme ? $theme_root : WP_PLUGIN_DIR;
+		$mu_plugins_config = $config['mu_plugins'] ?? '';
+		$mu_plugins_list   = ! empty( $mu_plugins_config ) ? array_map( 'trim', explode( ',', $mu_plugins_config ) ) : [];
+
+		$is_mu_plugin = in_array( $repo_name, $mu_plugins_list, true )
+		             || in_array( $slug, $mu_plugins_list, true )
+		             || file_exists( $mu_plugin_dir . '/' . $slug )
+		             || file_exists( $mu_plugin_dir . '/' . $slug . '.php' )
+		             || file_exists( $mu_plugin_dir . '/_token_' . $slug . '.php' );
+
+		$is_theme = ! $is_mu_plugin && (
+		    file_exists( $theme_root . '/' . $slug . '/style.css' )
+		    || ( strpos( $slug, 'theme' ) !== false )
+		    || ( strpos( $slug, '-wp-' ) !== false && ! file_exists( WP_PLUGIN_DIR . '/' . $slug ) )
+		);
+
+		$base_dir_path   = $is_mu_plugin ? $mu_plugin_dir : ( $is_theme ? $theme_root : WP_PLUGIN_DIR );
 		$target_dir_path = $base_dir_path . '/' . $slug;
 
 		$plugin_file_path = $target_dir_path . '/' . $slug . '.php';
@@ -470,7 +483,26 @@ class Hookshot_Bridges {
 
 		// Extract old version before backup/update
 		$old_version = 'not installed';
-		if ( $is_theme ) {
+		if ( $is_mu_plugin ) {
+			if ( file_exists( $target_dir_path ) && is_dir( $target_dir_path ) ) {
+				$php_files = glob( $target_dir_path . '/*.php' );
+				if ( is_array( $php_files ) ) {
+					foreach ( $php_files as $file ) {
+						$data = get_plugin_data( $file, false, false );
+						if ( ! empty( $data['Version'] ) ) {
+							$old_version = $data['Version'];
+							break;
+						}
+					}
+				}
+			} elseif ( file_exists( $target_dir_path . '.php' ) ) {
+				$data = get_plugin_data( $target_dir_path . '.php', false, false );
+				if ( ! empty( $data['Version'] ) ) {
+					$old_version = $data['Version'];
+				}
+			}
+			$was_active = true;
+		} elseif ( $is_theme ) {
 			if ( function_exists( 'wp_get_theme' ) ) {
 				$theme_obj = wp_get_theme( $slug );
 				if ( $theme_obj->exists() ) {
@@ -600,7 +632,135 @@ class Hookshot_Bridges {
 		}
 
 		// Check if performing a self-update of Hookshot plugin itself
-		$is_self_update = ! $is_theme && ( $slug === 'xophz-compass-hookshot' || strpos( __FILE__, '/' . $slug . '/' ) !== false );
+		$is_self_update = ! $is_theme && ! $is_mu_plugin && ( $slug === 'xophz-compass-hookshot' || strpos( __FILE__, '/' . $slug . '/' ) !== false );
+
+		if ( $is_mu_plugin ) {
+			$tmp_file = $tmp_download;
+
+			$tmp_dir = WP_CONTENT_DIR . '/upgrade/hookshot_mu_' . time();
+			$wp_filesystem->mkdir( $tmp_dir );
+
+			$unzipped = unzip_file( $tmp_file, $tmp_dir );
+			@unlink( $tmp_file );
+
+			if ( is_wp_error( $unzipped ) || ! $unzipped ) {
+				remove_filter( 'upgrader_source_selection', $rename_filter, 10 );
+				remove_filter( 'http_request_args', $auth_filter, 10 );
+				$wp_filesystem->delete( $tmp_dir, true );
+				if ( $backup_created ) {
+					$wp_filesystem->delete( $backup_dir_path, true );
+				}
+				$err = is_wp_error( $unzipped ) ? $unzipped->get_error_message() : 'Failed to unzip mu-plugin package.';
+				return [
+					'status'       => 'error',
+					'details'      => 'MU-Plugin extraction failed: ' . $err,
+					'slug'         => $slug,
+					'item_type'    => 'mu-plugin',
+					'old_version'  => $old_version,
+					'target_tag'   => $release_tag,
+				];
+			}
+
+			// Find extracted source directory inside $tmp_dir
+			$entries          = array_diff( scandir( $tmp_dir ), [ '.', '..' ] );
+			$extracted_source = $tmp_dir;
+			if ( count( $entries ) === 1 ) {
+				$first = reset( $entries );
+				if ( is_dir( $tmp_dir . '/' . $first ) ) {
+					$extracted_source = $tmp_dir . '/' . $first;
+				}
+			}
+
+			if ( ! $wp_filesystem->is_dir( $target_dir_path ) ) {
+				$wp_filesystem->mkdir( $target_dir_path );
+			}
+
+			// Copy files cleanly over existing target directory
+			$copied = copy_dir( $extracted_source, $target_dir_path );
+			$wp_filesystem->delete( $tmp_dir, true );
+
+			remove_filter( 'upgrader_source_selection', $rename_filter, 10 );
+			remove_filter( 'http_request_args', $auth_filter, 10 );
+
+			if ( is_wp_error( $copied ) || $copied === false ) {
+				// Rollback from backup if copy failed
+				if ( $backup_created ) {
+					copy_dir( $backup_dir_path, $target_dir_path );
+					$wp_filesystem->delete( $backup_dir_path, true );
+				}
+				return [
+					'status'             => 'error',
+					'details'            => 'MU-Plugin copy_dir failed to overwrite plugin files.',
+					'slug'               => $slug,
+					'item_type'          => 'mu-plugin',
+					'old_version'        => $old_version,
+					'target_tag'         => $release_tag,
+					'rollback_performed' => true,
+				];
+			}
+
+			// Clean backup on success
+			if ( $backup_created ) {
+				$wp_filesystem->delete( $backup_dir_path, true );
+			}
+
+			// Invalidate OPcache for PHP files in mu-plugin directory
+			if ( function_exists( 'opcache_invalidate' ) ) {
+				$all_php = glob( $target_dir_path . '/*.php' );
+				if ( is_array( $all_php ) ) {
+					foreach ( $all_php as $php_file ) {
+						@opcache_invalidate( $php_file, true );
+					}
+				}
+				$token_file = $mu_plugin_dir . '/_token_' . $slug . '.php';
+				if ( file_exists( $token_file ) ) {
+					@opcache_invalidate( $token_file, true );
+				}
+			}
+
+			// Handle Genesis Wave token regeneration
+			$token_file = $mu_plugin_dir . '/_token_' . $slug . '.php';
+			if ( file_exists( $token_file ) ) {
+				@unlink( $token_file );
+			}
+			if ( function_exists( 'genesisWave' ) ) {
+				@genesisWave( $mu_plugin_dir );
+			}
+
+			// Extract new version
+			$new_version = 'unknown';
+			$php_files   = glob( $target_dir_path . '/*.php' );
+			if ( is_array( $php_files ) ) {
+				foreach ( $php_files as $file ) {
+					$data = get_plugin_data( $file, false, false );
+					if ( ! empty( $data['Version'] ) ) {
+						$new_version = $data['Version'];
+						break;
+					}
+				}
+			}
+			if ( $new_version === 'unknown' ) {
+				$new_version = $release_tag;
+			}
+
+			delete_site_transient( 'update_plugins' );
+			delete_transient( 'xophz_gh_rel_' . md5( 'HalloftheGods/' . $slug ) );
+
+			return [
+				'status'        => 'success',
+				'step'          => 'complete',
+				'details'       => "MU-Plugin '{$slug}' updated successfully: v{$old_version} -> v{$new_version} (Release {$release_tag}).",
+				'slug'          => $slug,
+				'item_type'     => 'mu-plugin',
+				'old_version'   => $old_version,
+				'new_version'   => $new_version,
+				'upgrade_path'  => "v{$old_version} -> v{$new_version}",
+				'release_tag'   => $release_tag,
+				'was_active'    => true,
+				'is_active'     => true,
+				'backups_clean' => true,
+			];
+		}
 
 		if ( $is_self_update ) {
 			$tmp_file = $tmp_download;
