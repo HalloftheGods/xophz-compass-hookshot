@@ -71,20 +71,20 @@ Hookshot Bridges automatically turn raw incoming webhooks into executable action
 ## 🚀 REST API Endpoints
 
 ### Public Webhook Routes (`xophz/v1`)
-* `POST /wp-json/xophz/v1/hookshot/incoming/{secret}` — Incoming webhook ingestion.
-* `POST /wp-json/xophz/v1/hookshot/verify/{secret}` — Challenge-response endpoint.
+* `POST /wp-json/xophz/v1/hookshot/incoming/{secret}` - Incoming webhook ingestion.
+* `POST /wp-json/xophz/v1/hookshot/verify/{secret}` - Challenge-response endpoint.
 
 ### Dashboard REST API (`xophz-hookshot/v1`)
-* `GET /wp-json/xophz-hookshot/v1/webhooks` — List all configured webhooks.
-* `GET|POST /wp-json/xophz-hookshot/v1/webhooks/{id}` — Retrieve or update a webhook configuration.
-* `POST /wp-json/xophz-hookshot/v1/webhooks/{id}/test` — Send a test payload.
-* `GET /wp-json/xophz-hookshot/v1/webhooks/{id}/logs` — Fetch execution logs for a webhook.
-* `GET /wp-json/xophz-hookshot/v1/webhooks/{id}/health` — Get health stats for a webhook.
-* `GET /wp-json/xophz-hookshot/v1/dead-letters` — View dead letter queue.
-* `POST /wp-json/xophz-hookshot/v1/dead-letters/{id}/retry` — Manually retry a dead letter event.
-* `GET /wp-json/xophz-hookshot/v1/stats` — Aggregate system health stats.
-* `GET /wp-json/xophz-hookshot/v1/bridges` — Available bridge configurations.
-* `GET /wp-json/xophz-hookshot/v1/presets` — Transformation presets.
+* `GET /wp-json/xophz-hookshot/v1/webhooks` - List all configured webhooks.
+* `GET|POST /wp-json/xophz-hookshot/v1/webhooks/{id}` - Retrieve or update a webhook configuration.
+* `POST /wp-json/xophz-hookshot/v1/webhooks/{id}/test` - Send a test payload.
+* `GET /wp-json/xophz-hookshot/v1/webhooks/{id}/logs` - Fetch execution logs for a webhook.
+* `GET /wp-json/xophz-hookshot/v1/webhooks/{id}/health` - Get health stats for a webhook.
+* `GET /wp-json/xophz-hookshot/v1/dead-letters` - View dead letter queue.
+* `POST /wp-json/xophz-hookshot/v1/dead-letters/{id}/retry` - Manually retry a dead letter event.
+* `GET /wp-json/xophz-hookshot/v1/stats` - Aggregate system health stats.
+* `GET /wp-json/xophz-hookshot/v1/bridges` - Available bridge configurations.
+* `GET /wp-json/xophz-hookshot/v1/presets` - Transformation presets.
 
 ---
 
