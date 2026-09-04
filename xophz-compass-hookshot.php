@@ -52,8 +52,7 @@ function activate_xophz_compass_hookshot() {
  * The code that runs during plugin deactivation.
  */
 function deactivate_xophz_compass_hookshot() {
-	require_once XOPHZ_COMPASS_HOOKSHOT_DIR . 'includes/class-xophz-compass-hookshot-deactivator.php';
-	Xophz_Compass_Hookshot_Deactivator::deactivate();
+	flush_rewrite_rules();
 }
 
 register_activation_hook( __FILE__, 'activate_xophz_compass_hookshot' );
