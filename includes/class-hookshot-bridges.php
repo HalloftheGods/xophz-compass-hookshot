@@ -98,7 +98,7 @@ class Hookshot_Bridges {
 			'description' => 'Auto-update a plugin, mu-plugin, or theme when a GitHub release is published.',
 			'icon'        => 'fab fa-github',
 			'category'    => 'DevOps',
-			'fields'      => [ 'allowed_plugins', 'mu_plugins', 'github_token' ],
+			'fields'      => [ 'allowed_plugins', 'mu_plugins', 'github_token', 'allow_prereleases', 'allow_redeploy' ],
 			'handler'     => [ $this, 'bridge_github_plugin_release' ],
 		] );
 
@@ -317,14 +317,33 @@ class Hookshot_Bridges {
 
 		$action = self::extract_field( $payload, 'action' ) ?: 'unknown';
 
-		// Step 1: Action Filtering - restrict to 'published' and report non-trigger actions cleanly
-		if ( $action !== 'published' ) {
+		// Configuration flags: check bridge config, query params, or payload fields
+		$allow_prereleases = ! empty( $config['allow_prereleases'] ) && ( $config['allow_prereleases'] === '1' || $config['allow_prereleases'] === 'true' || $config['allow_prereleases'] === true );
+		if ( isset( $_GET['allow_prereleases'] ) && ( $_GET['allow_prereleases'] === '1' || $_GET['allow_prereleases'] === 'true' ) ) {
+			$allow_prereleases = true;
+		}
+		if ( ! empty( $payload['allow_prereleases'] ) ) {
+			$allow_prereleases = true;
+		}
+
+		$force_redeploy = ! empty( $config['allow_redeploy'] ) && ( $config['allow_redeploy'] === '1' || $config['allow_redeploy'] === 'true' || $config['allow_redeploy'] === true );
+		if ( isset( $_GET['force'] ) || isset( $_GET['redeploy'] ) || ! empty( $payload['force'] ) || ! empty( $payload['redeploy'] ) ) {
+			$force_redeploy = true;
+		}
+
+		// Step 1: Action Filtering - support both 'published' and 'released' events
+		$trigger_actions = [ 'published', 'released' ];
+		if ( $allow_prereleases ) {
+			$trigger_actions[] = 'prereleased';
+		}
+
+		if ( ! in_array( $action, $trigger_actions, true ) ) {
 			$action_descriptions = [
 				'created'     => 'Release draft/record created in GitHub',
 				'edited'      => 'Release details modified in GitHub',
-				'released'    => 'Duplicate release action (handled via primary published event)',
+				'released'    => 'Release published or promoted from pre-release in GitHub',
 				'deleted'     => 'Release removed from GitHub',
-				'prereleased' => 'Pre-release published in GitHub',
+				'prereleased' => 'Pre-release published in GitHub (enable allow_prereleases to deploy)',
 				'unpublished' => 'Release unpublished in GitHub',
 			];
 			$desc = $action_descriptions[ $action ] ?? "GitHub release event '{$action}'";
@@ -332,7 +351,7 @@ class Hookshot_Bridges {
 				'status'  => 'skipped',
 				'step'    => 'filter_action',
 				'action'  => $action,
-				'details' => "Step skipped: {$desc}. Updates trigger exclusively on 'published' events.",
+				'details' => "Step skipped: {$desc}. Updates trigger on 'published' or 'released' events.",
 			];
 		}
 
@@ -359,10 +378,31 @@ class Hookshot_Bridges {
 
 		$release_tag = $release->tag_name ?? $release->name ?? 'unknown';
 
+		// Step 1b: Release State Guard - skip drafts and unapproved pre-releases
+		if ( ! empty( $release->draft ) ) {
+			return [
+				'status'      => 'skipped',
+				'step'        => 'filter_draft',
+				'details'     => "Step skipped: Release '{$release_tag}' is marked as a draft.",
+				'slug'        => $slug,
+				'release_tag' => $release_tag,
+			];
+		}
+
+		if ( ! empty( $release->prerelease ) && ! $allow_prereleases ) {
+			return [
+				'status'      => 'skipped',
+				'step'        => 'filter_prerelease',
+				'details'     => "Step skipped: Release '{$release_tag}' is marked as a pre-release. Promote to a full release on GitHub or enable 'allow_prereleases' to deploy.",
+				'slug'        => $slug,
+				'release_tag' => $release_tag,
+			];
+		}
+
 		// Step 2: Transient Deduplication Lock (60-second window per release tag)
 		if ( ! empty( $slug ) && ! empty( $release_tag ) ) {
 			$lock_key = 'xophz_gh_rel_lock_' . md5( $slug . '_' . $release_tag );
-			if ( get_transient( $lock_key ) ) {
+			if ( ! $force_redeploy && get_transient( $lock_key ) ) {
 				return [
 					'status'      => 'skipped',
 					'step'        => 'deduplication',
@@ -516,6 +556,29 @@ class Hookshot_Bridges {
 				$old_version = ! empty( $old_data['Version'] ) ? $old_data['Version'] : 'unknown';
 			}
 			$was_active = is_plugin_active( $plugin_file );
+		}
+
+		// Step 3: Version Equality Guard - prevent redundant downloads if already running target version
+		$clean_old = ltrim( (string) $old_version, 'vV' );
+		$clean_tag = ltrim( (string) $release_tag, 'vV' );
+		$is_same_version = false;
+		if ( $clean_old !== 'unknown' && $clean_old !== 'not installed' && ! empty( $clean_old ) && ! empty( $clean_tag ) ) {
+			if ( $clean_old === $clean_tag ) {
+				$is_same_version = true;
+			} elseif ( function_exists( 'version_compare' ) && version_compare( $clean_old, $clean_tag, '==' ) ) {
+				$is_same_version = true;
+			}
+		}
+
+		if ( $is_same_version && ! $force_redeploy ) {
+			return [
+				'status'      => 'skipped',
+				'step'        => 'version_check',
+				'details'     => "Step skipped: '{$slug}' is already running version {$old_version} (Release {$release_tag}). Set 'allow_redeploy' or add ?force=1 to redeploy identical version.",
+				'slug'        => $slug,
+				'old_version' => $old_version,
+				'release_tag' => $release_tag,
+			];
 		}
 
 		// Clean up any stale backup directories from previous runs
