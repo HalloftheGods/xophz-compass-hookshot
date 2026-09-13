@@ -102,6 +102,15 @@ class Hookshot_Bridges {
 			'handler'     => [ $this, 'bridge_github_plugin_release' ],
 		] );
 
+		self::register( 'github_sponsors', [
+			'name'        => 'GitHub Sponsors SaaS Gate',
+			'description' => 'Sync GitHub Sponsor status to Gatekeeper and provision developer licenses.',
+			'icon'        => 'fad fa-heart',
+			'category'    => 'Monetization',
+			'fields'      => [ 'default_tier', 'welcome_email' ],
+			'handler'     => [ $this, 'bridge_github_sponsors' ],
+		] );
+
 		do_action( 'xophz_hookshot_register_bridges' );
 	}
 
@@ -1098,6 +1107,78 @@ class Hookshot_Bridges {
 			'old_version'        => $old_version,
 			'target_tag'         => $release_tag,
 			'rollback_performed' => $rollback_performed,
+		];
+	}
+
+	public function bridge_github_sponsors( $payload, $webhook_id, $config ) {
+		$action = self::extract_field( $payload, 'action' ) ?: 'created';
+		$sponsor_login = self::extract_field( $payload, 'sponsorship.sponsor.login' );
+		
+		if ( empty( $sponsor_login ) ) {
+			$sponsor_login = self::extract_field( $payload, 'sender.login' );
+		}
+
+		if ( empty( $sponsor_login ) ) {
+			return [
+				'status'  => 'skipped',
+				'details' => 'No sponsor login found in payload.',
+			];
+		}
+
+		$tier_name = self::extract_field( $payload, 'sponsorship.tier.name' ) ?: '$9 a month';
+		$price_usd = (float) ( self::extract_field( $payload, 'sponsorship.tier.monthly_price_in_dollars' ) ?: 9 );
+
+		$tier_slug = 'solo_sponsor';
+		if ( $price_usd >= 49 || stripos( $tier_name, 'team' ) !== false || stripos( $tier_name, 'power puff' ) !== false ) {
+			$tier_slug = 'team_power_puff';
+		}
+
+		$is_cancelled = $action === 'cancelled';
+
+		if ( class_exists( 'Gatekeeper_Entitlements' ) ) {
+			if ( $is_cancelled ) {
+				Gatekeeper_Entitlements::cancel_sponsor( $sponsor_login );
+				$gatekeeper_result = [ 'action' => 'cancelled', 'user' => $sponsor_login ];
+			} else {
+				$gatekeeper_result = Gatekeeper_Entitlements::record_sponsor( $sponsor_login, $tier_slug, [
+					'tier_name'  => $tier_name,
+					'price_usd'  => $price_usd,
+					'webhook_id' => $webhook_id,
+					'action'     => $action,
+				] );
+			}
+		} else {
+			$sponsors = get_option( 'compass_gatekeeper_sponsors', [] );
+			if ( $is_cancelled ) {
+				if ( isset( $sponsors[ $sponsor_login ] ) ) {
+					$sponsors[ $sponsor_login ]['status'] = 'cancelled';
+				}
+			} else {
+				$sponsors[ $sponsor_login ] = [
+					'github_user' => $sponsor_login,
+					'tier'        => $tier_slug,
+					'status'      => 'active',
+					'updated_at'  => current_time( 'mysql' ),
+				];
+			}
+			update_option( 'compass_gatekeeper_sponsors', $sponsors, false );
+			$gatekeeper_result = [ 'fallback_synced' => true ];
+		}
+
+		do_action( 'xophz_github_sponsorship_sync', [
+			'action'      => $action,
+			'github_user' => $sponsor_login,
+			'tier'        => $tier_slug,
+			'price_usd'   => $price_usd,
+			'gatekeeper'  => $gatekeeper_result,
+		] );
+
+		return [
+			'status'      => 'success',
+			'action'      => $action,
+			'github_user' => $sponsor_login,
+			'tier'        => $tier_slug,
+			'gatekeeper'  => $gatekeeper_result,
 		];
 	}
 

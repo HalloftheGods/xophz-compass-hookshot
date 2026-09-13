@@ -3,6 +3,12 @@
 All notable changes to this WordPress plugin submodule will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [2026-09-13]
+
+### Added
+- **GitHub Sponsors SaaS Gate Bridge**: Registered `github_sponsors` bridge in `Hookshot_Bridges::register_default_bridges` to sync incoming GitHub Sponsors webhook events (`created`, `tier_changed`, `cancelled`) with `Gatekeeper_Entitlements` in `xophz-compass-gatekeeper`.
+- **Automatic Sponsor Provisioning**: Automatically generates `CX-SP-` developer licenses, maps sponsor tiers ($9/mo Solo vs $49/mo Team Power Puff), and dispatches the `xophz_github_sponsorship_sync` action for marketing drips.
+
 ## [2026-09-07]
 
 ### Added
