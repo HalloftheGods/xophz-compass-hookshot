@@ -99,6 +99,11 @@ This order keeps deploys working at every step:
 3. In each repository, change the Payload URL to the webhook's endpoint, `/wp-json/xophz/v1/hookshot/receive/{id}`.
 4. When `legacy_url_last_used` on the webhook stops changing, clear the URL secret (`"clear": ["secret"]`) and retire the legacy routes with the filter above.
 
+### What an incoming sender can and cannot change
+* **IP allowlist**: a webhook's allowed IPs (IPs or CIDR ranges) are checked against `REMOTE_ADDR`. `X-Forwarded-For` is a header the sender writes, so it is read only when `REMOTE_ADDR` is a trusted proxy. Behind a load balancer or CDN, list its address in `define( 'XOPHZ_HOOKSHOT_TRUSTED_PROXIES', '10.0.0.0/8,203.0.113.5' );` (or return the list from the `xophz_hookshot_trusted_proxies` filter). The client is then the right-most forwarded address that is not itself a trusted proxy.
+* **Release behavior flags**: the GitHub Plugin Release bridge reads `allow_prereleases` and `allow_redeploy` from the webhook's stored bridge settings. A top-level `allow_prereleases`, `force` or `redeploy` field in the payload counts only when the request carried a valid signature for the webhook's signing secret. Query-string `?force`, `?redeploy` and `?allow_prereleases` are ignored.
+* **Errors**: a failing bridge or handler is logged on the server and mailed to the site admin; the sender gets a generic message, never the exception text.
+
 ---
 
 ## 🛠️ Installation & Setup

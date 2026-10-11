@@ -19,6 +19,7 @@ class Xophz_Compass_Hookshot {
 		require_once $dir . 'class-xophz-compass-hookshot-cpt.php';
 		require_once $dir . 'class-xophz-compass-hookshot-rest.php';
 		require_once $dir . 'class-hookshot-signature.php';
+		require_once $dir . 'class-hookshot-client-ip.php';
 		require_once $dir . 'class-hookshot-webhook-secrets.php';
 		require_once $dir . 'class-hookshot-auth.php';
 		require_once $dir . 'class-hookshot-transform.php';

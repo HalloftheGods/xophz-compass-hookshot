@@ -9,6 +9,18 @@ class Hookshot_Signature {
 
 	const TIMESTAMP_TOLERANCE = 300;
 
+	/** Webhook ids whose request body passed an HMAC check against a signing secret in this request. */
+	private static $verified = [];
+
+	/**
+	 * True only when verify() matched this request's signature to the webhook's signing secret.
+	 * A webhook with no signing secret passes verify() unsigned, and that is not "verified", so
+	 * payload fields that change behavior (force, redeploy, allow_prereleases) are not honored for it.
+	 */
+	public static function was_verified( $webhook_id ) {
+		return ! empty( self::$verified[ (int) $webhook_id ] );
+	}
+
 	public static function sign( $payload_body, $signing_secret ) {
 		$timestamp = time();
 		$signature = hash_hmac( 'sha256', "{$timestamp}.{$payload_body}", $signing_secret );
@@ -17,6 +29,8 @@ class Hookshot_Signature {
 	}
 
 	public static function verify( WP_REST_Request $request, $webhook_id ) {
+		unset( self::$verified[ (int) $webhook_id ] );
+
 		$signing_secret = get_post_meta( $webhook_id, 'hookshot_signing_secret', true );
 
 		$hasNoSecret = empty( $signing_secret );
@@ -34,7 +48,13 @@ class Hookshot_Signature {
 
 		$raw_body = $request->get_body();
 
-		return self::validate_stripe_format( $header_value, $raw_body, $signing_secret );
+		$result = self::validate_stripe_format( $header_value, $raw_body, $signing_secret );
+
+		if ( true === $result ) {
+			self::$verified[ (int) $webhook_id ] = true;
+		}
+
+		return $result;
 	}
 
 	/**

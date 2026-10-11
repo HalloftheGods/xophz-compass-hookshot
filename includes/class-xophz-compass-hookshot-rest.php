@@ -160,9 +160,10 @@ class Xophz_Compass_Hookshot_REST {
 		} catch ( Throwable $e ) {
 			error_log( sprintf( 'Hookshot Incoming Webhook Exception: %s in %s:%d', $e->getMessage(), $e->getFile(), $e->getLine() ) );
 			Hookshot_Notifier::notify_failure( $webhook_id, sprintf( "%s\nFile: %s:%d", $e->getMessage(), $e->getFile(), $e->getLine() ), 'Incoming REST Endpoint' );
+			// The exception text stays in the server log and the failure notification, never in the response.
 			return new WP_REST_Response( [
 				'success' => false,
-				'message' => 'Internal processing error: ' . $e->getMessage(),
+				'message' => 'Internal processing error.',
 			], 500 );
 		}
 	}
@@ -294,10 +295,10 @@ class Xophz_Compass_Hookshot_REST {
 			return true;
 		}
 
-		$client_ip = $request->get_header( 'x_forwarded_for' ) ?: $_SERVER['REMOTE_ADDR'] ?? '';
-		$client_ip = trim( explode( ',', $client_ip )[0] );
+		// REMOTE_ADDR, or the forwarded client behind a configured trusted proxy. Never a caller-set header alone.
+		$client_ip = Hookshot_Client_Ip::resolve( $request );
 
-		$isAllowed = in_array( $client_ip, $ip_list, true );
+		$isAllowed = '' !== $client_ip && Hookshot_Client_Ip::matches_any( $client_ip, $ip_list );
 		if ( ! $isAllowed ) {
 			return new WP_Error( 'ip_blocked', 'Request origin not in IP whitelist.' );
 		}

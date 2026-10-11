@@ -152,7 +152,9 @@ class Hookshot_Bridges {
 					$err_details = sprintf( "Bridge [%s] Error: %s in %s:%d", $bridge_slug, $e->getMessage(), $e->getFile(), $e->getLine() );
 					error_log( $err_details );
 					Hookshot_Notifier::notify_failure( $webhook_id, $err_details, 'Automated Bridge Engine' );
-					$results[ $bridge_slug ] = [ 'status' => 'error', 'details' => $e->getMessage() ];
+					// The exception text stays in the server log and the failure notification; the result is
+					// stored in the webhook log and returned to the sender, so it carries a generic message.
+					$results[ $bridge_slug ] = [ 'status' => 'error', 'details' => 'Bridge failed. See the server log or the failure notification.' ];
 				}
 			}
 		}
@@ -326,17 +328,18 @@ class Hookshot_Bridges {
 
 		$action = self::extract_field( $payload, 'action' ) ?: 'unknown';
 
-		// Configuration flags: check bridge config, query params, or payload fields
+		// Behavior flags come from the webhook's stored config. The payload may switch them on only when
+		// this request's HMAC signature was verified (a webhook with no signing secret is unsigned, so
+		// its payload is untrusted). Query parameters are never read: anyone who can reach the URL can set them.
+		$isSignedRequest = Hookshot_Signature::was_verified( $webhook_id );
+
 		$allow_prereleases = ! empty( $config['allow_prereleases'] ) && ( $config['allow_prereleases'] === '1' || $config['allow_prereleases'] === 'true' || $config['allow_prereleases'] === true );
-		if ( isset( $_GET['allow_prereleases'] ) && ( $_GET['allow_prereleases'] === '1' || $_GET['allow_prereleases'] === 'true' ) ) {
-			$allow_prereleases = true;
-		}
-		if ( ! empty( $payload['allow_prereleases'] ) ) {
+		if ( $isSignedRequest && ! empty( $payload['allow_prereleases'] ) ) {
 			$allow_prereleases = true;
 		}
 
 		$force_redeploy = ! empty( $config['allow_redeploy'] ) && ( $config['allow_redeploy'] === '1' || $config['allow_redeploy'] === 'true' || $config['allow_redeploy'] === true );
-		if ( isset( $_GET['force'] ) || isset( $_GET['redeploy'] ) || ! empty( $payload['force'] ) || ! empty( $payload['redeploy'] ) ) {
+		if ( $isSignedRequest && ( ! empty( $payload['force'] ) || ! empty( $payload['redeploy'] ) ) ) {
 			$force_redeploy = true;
 		}
 
@@ -574,7 +577,7 @@ class Hookshot_Bridges {
 			return [
 				'status'      => 'skipped',
 				'step'        => 'version_check',
-				'details'     => "Step skipped: '{$slug}' is already running version {$old_version} (Release {$release_tag}). Set 'allow_redeploy' or add ?force=1 to redeploy identical version.",
+				'details'     => "Step skipped: '{$slug}' is already running version {$old_version} (Release {$release_tag}). Enable 'allow_redeploy' on the webhook to redeploy an identical version.",
 				'slug'        => $slug,
 				'old_version' => $old_version,
 				'release_tag' => $release_tag,
