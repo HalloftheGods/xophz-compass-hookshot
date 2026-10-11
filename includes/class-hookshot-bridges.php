@@ -95,10 +95,10 @@ class Hookshot_Bridges {
 
 		self::register( 'github_plugin_release', [
 			'name'        => 'GitHub Plugin Release',
-			'description' => 'Auto-update a plugin, mu-plugin, or theme when a GitHub release is published.',
+			'description' => 'Auto-update a plugin, mu-plugin, or theme when a GitHub release is published. Private repositories use the GitHub Token in Settings > Connectors.',
 			'icon'        => 'fab fa-github',
 			'category'    => 'DevOps',
-			'fields'      => [ 'allowed_plugins', 'mu_plugins', 'github_token', 'allow_prereleases', 'allow_redeploy' ],
+			'fields'      => [ 'allowed_plugins', 'mu_plugins', 'allow_prereleases', 'allow_redeploy' ],
 			'handler'     => [ $this, 'bridge_github_plugin_release' ],
 		] );
 
@@ -439,21 +439,12 @@ class Hookshot_Bridges {
 		
 		$is_private = self::extract_field( $payload, 'repository.private' );
 
-		$github_token = $config['github_token'] ?? '';
-		if ( empty( $github_token ) ) {
-			if ( defined( 'GITHUB_TOKEN' ) ) {
-				$github_token = GITHUB_TOKEN;
-			} elseif ( defined( 'GITHUB_PA_TOKEN' ) ) {
-				$github_token = GITHUB_PA_TOKEN;
-			} else {
-				$github_token = get_option( 'xophz_compass_bugnet_github_token', '' );
-			}
-		}
+		$github_token = Hookshot_Connectors::get_key( Hookshot_Connectors::GITHUB_TOKEN );
 
 		if ( $is_private && empty( $github_token ) ) {
 			return [
 				'status'  => 'error',
-				'details' => "Repository '{$repo_name}' is private, but no GitHub Access Token is configured in Hookshot or COMPASS settings.",
+				'details' => "Repository '{$repo_name}' is private, but no GitHub token is configured. Set the GitHub Token connector in Settings > Connectors.",
 				'slug'    => $slug,
 			];
 		}

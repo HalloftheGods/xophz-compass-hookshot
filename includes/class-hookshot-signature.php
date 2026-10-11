@@ -3,6 +3,10 @@
 class Hookshot_Signature {
 
 	const DEFAULT_HEADER = 'X-Hookshot-Signature';
+
+	/** GitHub's signature header, accepted when the configured header is absent. */
+	const GITHUB_HEADER = 'x_hub_signature_256';
+
 	const TIMESTAMP_TOLERANCE = 300;
 
 	public static function sign( $payload_body, $signing_secret ) {
@@ -21,7 +25,7 @@ class Hookshot_Signature {
 		}
 
 		$header_name = get_post_meta( $webhook_id, 'hookshot_sig_header', true ) ?: self::DEFAULT_HEADER;
-		$header_value = $request->get_header( strtolower( str_replace( '-', '_', $header_name ) ) );
+		$header_value = $request->get_header( strtolower( str_replace( '-', '_', $header_name ) ) ) ?: $request->get_header( self::GITHUB_HEADER );
 
 		$hasNoHeader = empty( $header_value );
 		if ( $hasNoHeader ) {
@@ -31,6 +35,25 @@ class Hookshot_Signature {
 		$raw_body = $request->get_body();
 
 		return self::validate_stripe_format( $header_value, $raw_body, $signing_secret );
+	}
+
+	/**
+	 * Header HMAC authentication for the signed receive endpoint: unlike verify(), a webhook
+	 * with no signing secret is refused, so the request is never trusted on its URL alone.
+	 */
+	public static function verify_required( WP_REST_Request $request, $webhook_id ) {
+		$signing_secret = get_post_meta( $webhook_id, 'hookshot_signing_secret', true );
+
+		$hasNoSecret = empty( $signing_secret );
+		if ( $hasNoSecret ) {
+			return new WP_Error( 'signature_not_configured', 'Webhook has no signing secret.', [ 'status' => 401 ] );
+		}
+
+		return self::verify( $request, $webhook_id );
+	}
+
+	public static function generate_secret() {
+		return wp_generate_password( 40, false );
 	}
 
 	public static function build_outgoing_headers( $payload_body, $webhook_id ) {

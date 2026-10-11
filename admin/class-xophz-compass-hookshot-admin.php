@@ -49,9 +49,13 @@ class Xophz_Compass_Hookshot_Admin {
 
 		$type   = get_post_meta( $post->ID, 'hookshot_type', true ) ?: 'incoming';
 		$status = get_post_meta( $post->ID, 'hookshot_status', true ) ?: 'active';
-		$secret = get_post_meta( $post->ID, 'hookshot_secret', true ) ?: wp_generate_password( 24, false );
 		$url    = get_post_meta( $post->ID, 'hookshot_target_url', true );
 		$event  = get_post_meta( $post->ID, 'hookshot_trigger_event', true );
+		$flags  = Hookshot_Webhook_Secrets::flags( $post->ID );
+
+		$signing_note = $flags['has_signing_secret']
+			? __( 'Signing secret: configured. Senders sign each request with it in the signature header (HMAC-SHA256).', 'xophz-compass-hookshot' )
+			: __( 'Signing secret: not set. Set one in the Hookshot dashboard; unsigned requests are refused.', 'xophz-compass-hookshot' );
 
 		?>
 		<style>
@@ -81,10 +85,13 @@ class Xophz_Compass_Hookshot_Admin {
 				</td>
 			</tr>
 			<tr id="row_incoming" <?php if ( $type === 'outgoing' ) echo 'style="display:none;"'; ?>>
-				<th><label for="hookshot_secret"><?php _e( 'Incoming Secret Key', 'xophz-compass-hookshot' ); ?></label></th>
+				<th><?php _e( 'Incoming Endpoint', 'xophz-compass-hookshot' ); ?></th>
 				<td>
-					<input type="text" name="hookshot_secret" id="hookshot_secret" value="<?php echo esc_attr( $secret ); ?>" />
-					<p class="description">Endpoint URL: <code><?php echo esc_url( rest_url( 'xophz/v1/hookshot/incoming/' . $secret ) ); ?></code></p>
+					<code><?php echo esc_url( Xophz_Compass_Hookshot_REST::receive_url( $post->ID ) ); ?></code>
+					<p class="description"><?php echo esc_html( $signing_note ); ?></p>
+					<?php if ( $flags['has_secret'] ) : ?>
+					<p class="description"><?php esc_html_e( 'A deprecated secret URL is still active for this webhook. Move its senders to the endpoint above, then clear it.', 'xophz-compass-hookshot' ); ?></p>
+					<?php endif; ?>
 				</td>
 			</tr>
 			<tr id="row_outgoing_url" <?php if ( $type === 'incoming' ) echo 'style="display:none;"'; ?>>
@@ -129,7 +136,7 @@ class Xophz_Compass_Hookshot_Admin {
 			return;
 		}
 
-		$fields = [ 'hookshot_type', 'hookshot_status', 'hookshot_secret', 'hookshot_target_url', 'hookshot_trigger_event' ];
+		$fields = [ 'hookshot_type', 'hookshot_status', 'hookshot_target_url', 'hookshot_trigger_event' ];
 
 		foreach ( $fields as $field ) {
 			if ( isset( $_POST[ $field ] ) ) {

@@ -3,6 +3,16 @@
 All notable changes to this WordPress plugin submodule will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [2026-10-10]
+
+### Security
+- **Webhook secrets no longer leave the server (#5955, H1)**: every `hookshot/v1` dashboard route, reads included, now needs `manage_options` (reads were open to any logged-in user, subscribers included). Responses never contain `secret`, `signing_secret`, `auth_value` or a `github_token` inside `bridge_config`; they carry `has_secret`, `has_signing_secret` and `has_auth_value` booleans. `Hookshot_Webhook_Secrets` (`includes/class-hookshot-webhook-secrets.php`) makes those fields write-only: an empty value on update keeps the stored secret, and `clear` removes one. An incoming create generates a signing secret when none is given and returns it once, in the create response only.
+- **Signed receive endpoint (#5955, M7)**: added `POST xophz/v1/hookshot/receive/{id}` and `/receive/{id}/verify`, authenticated by an HMAC signature header (`Hookshot_Signature::verify_required`), so no secret travels in the URL. GitHub's `X-Hub-Signature-256` header is accepted alongside the configured one. Dashboard `endpoint` fields, the incoming test response and the wp-admin meta box now show this URL and never the secret.
+- **Deprecated, still served**: `xophz/v1/hookshot/incoming/{secret}` and `/hookshot/verify/{secret}` stay because 42 GitHub release webhooks on the plugin repositories still post to them. Responses carry `Deprecation` and `Link` (successor) headers, each use stamps `hookshot_legacy_last_used` (shown as `legacy_url_last_used`), new webhooks get no URL secret, and `add_filter( 'xophz_hookshot_legacy_secret_urls', '__return_false' )` retires the routes (410).
+- **GitHub token through Connectors**: registered the `github_token` connector (`Hookshot_Connectors`, `includes/class-hookshot-connectors.php`; option `compass_github_token`, constant and env var `GITHUB_TOKEN`). The GitHub Plugin Release bridge reads it and no longer reads `bridge_config['github_token']`, the `GITHUB_TOKEN`/`GITHUB_PA_TOKEN` constants directly, or the encrypted Bugnet option. A one-time migration moves any `github_token` found in `hookshot_bridge_config` meta into the connector and deletes it from meta; the bridge's settings no longer offer the field.
+- **Admin-only post types**: `compass_webhook` and `compass_wh_log` map every capability to `manage_options`, so editors can no longer open a webhook or log in wp-admin.
+- **Log redaction**: incoming logs store `Authorization`, `Proxy-Authorization`, `Cookie` and `X-WP-Nonce` headers as `[redacted]`.
+
 ## [2026-09-13]
 
 ### Added

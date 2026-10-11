@@ -15,9 +15,11 @@ class Xophz_Compass_Hookshot {
 	private function load_dependencies() {
 		$dir = XOPHZ_COMPASS_HOOKSHOT_DIR . 'includes/';
 
+		require_once $dir . 'class-hookshot-connectors.php';
 		require_once $dir . 'class-xophz-compass-hookshot-cpt.php';
 		require_once $dir . 'class-xophz-compass-hookshot-rest.php';
 		require_once $dir . 'class-hookshot-signature.php';
+		require_once $dir . 'class-hookshot-webhook-secrets.php';
 		require_once $dir . 'class-hookshot-auth.php';
 		require_once $dir . 'class-hookshot-transform.php';
 		require_once $dir . 'class-hookshot-health.php';
@@ -32,6 +34,8 @@ class Xophz_Compass_Hookshot {
 	}
 
 	public function run() {
+		Hookshot_Connectors::init();
+
 		$cpt = new Xophz_Compass_Hookshot_CPT();
 		$cpt->init();
 

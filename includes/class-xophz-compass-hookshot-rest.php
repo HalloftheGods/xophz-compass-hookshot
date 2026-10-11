@@ -1,50 +1,122 @@
 <?php
 
+/**
+ * Incoming webhook receiver.
+ *
+ * POST xophz/v1/hookshot/receive/{id} is the supported endpoint. {id} is the public webhook id,
+ * and the request authenticates with an HMAC signature header (Hookshot_Signature) keyed by the
+ * webhook's signing secret, so no secret travels in the URL.
+ *
+ * DEPRECATED: POST xophz/v1/hookshot/incoming/{secret} and /hookshot/verify/{secret} carry the
+ * webhook secret in the URL path, where it lands in access logs and referrers. They remain only
+ * because the GitHub release webhooks on the plugin repositories still post to that form. Their
+ * responses carry a Deprecation header and a Link to the signed endpoint, each use is stamped in
+ * the `hookshot_legacy_last_used` meta, and returning false from the
+ * `xophz_hookshot_legacy_secret_urls` filter retires them (410).
+ */
 class Xophz_Compass_Hookshot_REST {
+
+	const NAMESPACE = 'xophz/v1';
+
+	const LEGACY_LAST_USED_META = 'hookshot_legacy_last_used';
+
+	const REDACTED_HEADERS = [ 'authorization', 'proxy_authorization', 'cookie', 'x_wp_nonce' ];
 
 	public function init() {
 		add_action( 'rest_api_init', [ $this, 'register_routes' ] );
 	}
 
+	public static function receive_url( $webhook_id ) {
+		return rest_url( self::NAMESPACE . '/hookshot/receive/' . (int) $webhook_id );
+	}
+
 	public function register_routes() {
-		register_rest_route( 'xophz/v1', '/hookshot/incoming/(?P<secret>[a-zA-Z0-9-_]+)', [
+		register_rest_route( self::NAMESPACE, '/hookshot/receive/(?P<id>\d+)', [
+			'methods'             => WP_REST_Server::CREATABLE,
+			'callback'            => [ $this, 'handle_signed_webhook' ],
+			'permission_callback' => '__return_true',
+		] );
+
+		register_rest_route( self::NAMESPACE, '/hookshot/receive/(?P<id>\d+)/verify', [
+			'methods'             => WP_REST_Server::CREATABLE,
+			'callback'            => [ $this, 'handle_signed_verification' ],
+			'permission_callback' => '__return_true',
+		] );
+
+		// Deprecated secret-in-URL routes; see the class comment.
+		register_rest_route( self::NAMESPACE, '/hookshot/incoming/(?P<secret>[a-zA-Z0-9-_]+)', [
 			'methods'             => WP_REST_Server::CREATABLE,
 			'callback'            => [ $this, 'handle_incoming_webhook' ],
 			'permission_callback' => '__return_true',
 		] );
 
-		register_rest_route( 'xophz/v1', '/hookshot/verify/(?P<secret>[a-zA-Z0-9-_]+)', [
+		register_rest_route( self::NAMESPACE, '/hookshot/verify/(?P<secret>[a-zA-Z0-9-_]+)', [
 			'methods'             => WP_REST_Server::CREATABLE,
 			'callback'            => [ $this, 'handle_verification_challenge' ],
 			'permission_callback' => '__return_true',
 		] );
 	}
 
+	public function handle_signed_webhook( WP_REST_Request $request ) {
+		$rejection = $this->reject_oversized_or_looping();
+		if ( $rejection ) {
+			return $rejection;
+		}
+
+		$webhook_id = $this->authenticate_signed( $request );
+		if ( is_wp_error( $webhook_id ) ) {
+			return $this->authentication_failed();
+		}
+
+		return $this->process( $request, $webhook_id );
+	}
+
+	public function handle_signed_verification( WP_REST_Request $request ) {
+		$webhook_id = $this->authenticate_signed( $request );
+		if ( is_wp_error( $webhook_id ) ) {
+			return $this->authentication_failed();
+		}
+
+		return $this->challenge_response( $request );
+	}
+
+	/**
+	 * @deprecated Secret in the URL path. Use POST xophz/v1/hookshot/receive/{id} with a signature header.
+	 */
 	public function handle_incoming_webhook( WP_REST_Request $request ) {
+		$rejection = $this->reject_oversized_or_looping();
+		if ( $rejection ) {
+			return $rejection;
+		}
+
+		$webhook_id = $this->resolve_legacy_webhook( $request );
+		if ( is_wp_error( $webhook_id ) ) {
+			return $this->error_response( $webhook_id );
+		}
+
+		$sig_check = Hookshot_Signature::verify( $request, $webhook_id );
+		if ( is_wp_error( $sig_check ) ) {
+			Hookshot_Health::record( $webhook_id, false );
+			return $this->deprecated( $this->error_response( $sig_check ), $webhook_id );
+		}
+
+		return $this->deprecated( $this->process( $request, $webhook_id ), $webhook_id );
+	}
+
+	/**
+	 * @deprecated Secret in the URL path. Use POST xophz/v1/hookshot/receive/{id}/verify with a signature header.
+	 */
+	public function handle_verification_challenge( WP_REST_Request $request ) {
+		$webhook_id = $this->resolve_legacy_webhook( $request );
+		if ( is_wp_error( $webhook_id ) ) {
+			return $this->error_response( $webhook_id );
+		}
+
+		return $this->deprecated( $this->challenge_response( $request ), $webhook_id );
+	}
+
+	private function process( WP_REST_Request $request, $webhook_id ) {
 		try {
-			$content_length = isset( $_SERVER['CONTENT_LENGTH'] ) ? (int) $_SERVER['CONTENT_LENGTH'] : 0;
-			
-			$isTooLarge = $content_length > 1048576;
-			if ( $isTooLarge ) {
-				return new WP_REST_Response( [ 'success' => false, 'message' => 'Payload Too Large. Max size is 1MB.' ], 413 );
-			}
-
-			$depth = isset( $_SERVER['HTTP_X_HOOKSHOT_DEPTH'] ) ? (int) $_SERVER['HTTP_X_HOOKSHOT_DEPTH'] : 0;
-			
-			$isLooping = $depth > 3;
-			if ( $isLooping ) {
-				return new WP_REST_Response( [ 'success' => false, 'message' => 'Loop detected. Max depth exceeded.' ], 408 );
-			}
-
-			$secret = $request->get_param( 'secret' );
-
-			$webhook_id = $this->resolve_webhook( $secret );
-
-			$isInvalid = is_wp_error( $webhook_id );
-			if ( $isInvalid ) {
-				return new WP_REST_Response( [ 'success' => false, 'message' => 'Invalid or inactive webhook secret.' ], 401 );
-			}
-
 			$ip_check = $this->check_ip_whitelist( $webhook_id, $request );
 			$isBlocked = is_wp_error( $ip_check );
 			if ( $isBlocked ) {
@@ -57,18 +129,8 @@ class Xophz_Compass_Hookshot_REST {
 				return new WP_REST_Response( [ 'success' => false, 'message' => $rate_check->get_error_message() ], 429 );
 			}
 
-			$sig_check = Hookshot_Signature::verify( $request, $webhook_id );
-			$isInvalidSig = is_wp_error( $sig_check );
-			if ( $isInvalidSig ) {
-				Hookshot_Health::record( $webhook_id, false );
-				return new WP_REST_Response( [
-					'success' => false,
-					'message' => $sig_check->get_error_message(),
-				], $sig_check->get_error_data()['status'] ?? 401 );
-			}
-
 			$payload = $request->get_json_params() ?: $request->get_body_params();
-			$headers = $request->get_headers();
+			$headers = self::redact_headers( $request->get_headers() );
 
 			$hasNoPayload = empty( $payload );
 			if ( $hasNoPayload ) {
@@ -97,7 +159,7 @@ class Xophz_Compass_Hookshot_REST {
 			], 200 );
 		} catch ( Throwable $e ) {
 			error_log( sprintf( 'Hookshot Incoming Webhook Exception: %s in %s:%d', $e->getMessage(), $e->getFile(), $e->getLine() ) );
-			Hookshot_Notifier::notify_failure( $webhook_id ?? 0, sprintf( "%s\nFile: %s:%d", $e->getMessage(), $e->getFile(), $e->getLine() ), 'Incoming REST Endpoint' );
+			Hookshot_Notifier::notify_failure( $webhook_id, sprintf( "%s\nFile: %s:%d", $e->getMessage(), $e->getFile(), $e->getLine() ), 'Incoming REST Endpoint' );
 			return new WP_REST_Response( [
 				'success' => false,
 				'message' => 'Internal processing error: ' . $e->getMessage(),
@@ -105,22 +167,95 @@ class Xophz_Compass_Hookshot_REST {
 		}
 	}
 
-	public function handle_verification_challenge( WP_REST_Request $request ) {
-		$secret = $request->get_param( 'secret' );
+	private function reject_oversized_or_looping() {
+		$content_length = isset( $_SERVER['CONTENT_LENGTH'] ) ? (int) $_SERVER['CONTENT_LENGTH'] : 0;
 
-		$webhook_id = $this->resolve_webhook( $secret );
-
-		$isInvalid = is_wp_error( $webhook_id );
-		if ( $isInvalid ) {
-			return new WP_REST_Response( [ 'success' => false ], 401 );
+		$isTooLarge = $content_length > 1048576;
+		if ( $isTooLarge ) {
+			return new WP_REST_Response( [ 'success' => false, 'message' => 'Payload Too Large. Max size is 1MB.' ], 413 );
 		}
 
+		$depth = isset( $_SERVER['HTTP_X_HOOKSHOT_DEPTH'] ) ? (int) $_SERVER['HTTP_X_HOOKSHOT_DEPTH'] : 0;
+
+		$isLooping = $depth > 3;
+		if ( $isLooping ) {
+			return new WP_REST_Response( [ 'success' => false, 'message' => 'Loop detected. Max depth exceeded.' ], 408 );
+		}
+
+		return null;
+	}
+
+	/**
+	 * Resolves an active incoming webhook by its public id and requires a valid HMAC signature.
+	 * Unauthenticated calls do not touch the webhook's health record.
+	 */
+	private function authenticate_signed( WP_REST_Request $request ) {
+		$webhook_id = (int) $request->get_param( 'id' );
+
+		$isActiveIncoming = $webhook_id > 0
+			&& get_post_type( $webhook_id ) === 'compass_webhook'
+			&& get_post_status( $webhook_id ) === 'publish'
+			&& get_post_meta( $webhook_id, 'hookshot_type', true ) === 'incoming'
+			&& get_post_meta( $webhook_id, 'hookshot_status', true ) === 'active';
+		if ( ! $isActiveIncoming ) {
+			return new WP_Error( 'unknown_webhook', 'Unknown webhook.' );
+		}
+
+		$sig_check = Hookshot_Signature::verify_required( $request, $webhook_id );
+
+		return is_wp_error( $sig_check ) ? $sig_check : $webhook_id;
+	}
+
+	private function authentication_failed() {
+		return new WP_REST_Response( [ 'success' => false, 'message' => 'Webhook signature missing or invalid.' ], 401 );
+	}
+
+	private function resolve_legacy_webhook( WP_REST_Request $request ) {
+		$isEnabled = (bool) apply_filters( 'xophz_hookshot_legacy_secret_urls', true );
+		if ( ! $isEnabled ) {
+			return new WP_Error( 'legacy_url_retired', 'Secret URLs are retired. Use the signed receive endpoint.', [ 'status' => 410 ] );
+		}
+
+		$webhook_id = $this->resolve_webhook( $request->get_param( 'secret' ) );
+		if ( ! is_wp_error( $webhook_id ) ) {
+			update_post_meta( $webhook_id, self::LEGACY_LAST_USED_META, time() );
+		}
+
+		return $webhook_id;
+	}
+
+	private function deprecated( WP_REST_Response $response, $webhook_id ) {
+		$response->header( 'Deprecation', 'true' );
+		$response->header( 'Link', '<' . self::receive_url( $webhook_id ) . '>; rel="successor-version"' );
+
+		return $response;
+	}
+
+	private function error_response( WP_Error $error ) {
+		$data = $error->get_error_data();
+		$status = is_array( $data ) ? (int) ( $data['status'] ?? 401 ) : 401;
+
+		return new WP_REST_Response( [ 'success' => false, 'message' => $error->get_error_message() ], $status );
+	}
+
+	private function challenge_response( WP_REST_Request $request ) {
 		$challenge = $request->get_param( 'challenge' ) ?: $request->get_header( 'x_hookshot_challenge' );
 
 		return new WP_REST_Response( [
 			'success'   => true,
 			'challenge' => $challenge,
 		] );
+	}
+
+	private static function redact_headers( array $headers ) {
+		foreach ( self::REDACTED_HEADERS as $name ) {
+			$isPresent = isset( $headers[ $name ] );
+			if ( $isPresent ) {
+				$headers[ $name ] = [ '[redacted]' ];
+			}
+		}
+
+		return $headers;
 	}
 
 	private function resolve_webhook( $secret ) {
@@ -138,7 +273,7 @@ class Xophz_Compass_Hookshot_REST {
 
 		$hasNoMatch = empty( $query->posts );
 		if ( $hasNoMatch ) {
-			return new WP_Error( 'invalid_secret', 'No active webhook matches this secret.' );
+			return new WP_Error( 'invalid_secret', 'Invalid or inactive webhook secret.', [ 'status' => 401 ] );
 		}
 
 		return $query->posts[0];
@@ -213,4 +348,3 @@ class Xophz_Compass_Hookshot_REST {
 		return $isValid ? $log_id : null;
 	}
 }
-

@@ -87,6 +87,8 @@ class Xophz_Compass_Hookshot_CPT {
 			'publicly_queryable'    => false,
 			'rewrite'               => false,
 			'capability_type'       => 'post',
+			'capabilities'          => self::admin_only_capabilities(),
+			'map_meta_cap'          => false,
 			'show_in_rest'          => true, // Allow REST API access for the editor if needed
 		];
 
@@ -125,12 +127,26 @@ class Xophz_Compass_Hookshot_CPT {
 			'publicly_queryable'    => false,
 			'rewrite'               => false,
 			'capability_type'       => 'post',
-			'capabilities'          => [
+			'capabilities'          => self::admin_only_capabilities( [
 				'create_posts' => 'do_not_allow', // Prevents manual creation of logs via UI
-			],
-			'map_meta_cap'          => true,
+			] ),
+			'map_meta_cap'          => false,
 		];
 
 		register_post_type( 'compass_wh_log', $args );
+	}
+
+	/**
+	 * Webhook configs and logs hold credentials and raw payloads, so every capability, including
+	 * opening one post in wp-admin, maps to manage_options (map_meta_cap is off).
+	 */
+	private static function admin_only_capabilities( array $overrides = [] ) {
+		$caps = array_fill_keys( [
+			'edit_post', 'read_post', 'delete_post', 'edit_posts', 'edit_others_posts', 'delete_posts',
+			'publish_posts', 'read_private_posts', 'create_posts', 'delete_private_posts',
+			'delete_published_posts', 'delete_others_posts', 'edit_private_posts', 'edit_published_posts',
+		], 'manage_options' );
+
+		return array_merge( $caps, $overrides );
 	}
 }

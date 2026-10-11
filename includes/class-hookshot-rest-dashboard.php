@@ -106,7 +106,7 @@ class Hookshot_REST_Dashboard {
 	}
 
 	public function check_read() {
-		return is_user_logged_in() || current_user_can( 'manage_options' );
+		return $this->check_admin(); // Configs, logs and stats describe credentials and raw payloads.
 	}
 
 	public function list_webhooks( WP_REST_Request $request ) {
@@ -160,7 +160,13 @@ class Hookshot_REST_Dashboard {
 
 		$this->save_webhook_meta( $post_id, $params );
 
-		return new WP_REST_Response( $this->format_webhook( get_post( $post_id ) ), 201 );
+		$generated = ( $params['type'] ?? '' ) === 'incoming' ? Hookshot_Webhook_Secrets::issue_signing_secret( $post_id ) : '';
+		$data = $this->format_webhook( get_post( $post_id ) );
+		if ( $generated !== '' ) {
+			$data['signing_secret'] = $generated; // Shown once: no later response returns it.
+		}
+
+		return new WP_REST_Response( $data, 201 );
 	}
 
 	public function get_webhook( WP_REST_Request $request ) {
@@ -209,13 +215,12 @@ class Hookshot_REST_Dashboard {
 
 		$isIncoming = $type === 'incoming';
 		if ( $isIncoming ) {
-			$secret = get_post_meta( $id, 'hookshot_secret', true );
-			$endpoint = rest_url( "xophz/v1/hookshot/incoming/{$secret}" );
+			$header = get_post_meta( $id, 'hookshot_sig_header', true ) ?: Hookshot_Signature::DEFAULT_HEADER;
 
 			return new WP_REST_Response( [
 				'type'     => 'incoming',
-				'endpoint' => $endpoint,
-				'message'  => 'Use this URL to receive webhooks. Send a POST with JSON body to test.',
+				'endpoint' => Xophz_Compass_Hookshot_REST::receive_url( $id ),
+				'message'  => "POST a JSON body to this URL with the {$header} header: t=<unix time>,v1=<HMAC-SHA256 of '<t>.<body>'>, or sha256=<HMAC-SHA256 of the body>, keyed by the signing secret.",
 			] );
 		}
 
@@ -392,9 +397,9 @@ class Hookshot_REST_Dashboard {
 
 	private function format_webhook( $post ) {
 		$meta_keys = [
-			'hookshot_type', 'hookshot_status', 'hookshot_secret',
-			'hookshot_target_url', 'hookshot_trigger_event', 'hookshot_signing_secret',
-			'hookshot_sig_header', 'hookshot_auth_type', 'hookshot_auth_value',
+			'hookshot_type', 'hookshot_status',
+			'hookshot_target_url', 'hookshot_trigger_event',
+			'hookshot_sig_header', 'hookshot_auth_type',
 			'hookshot_auth_header', 'hookshot_transform', 'hookshot_incoming_transform',
 			'hookshot_bridges', 'hookshot_bridge_config', 'hookshot_allowed_ips',
 			'hookshot_rate_limit', 'hookshot_max_retries', 'hookshot_last_fired',
@@ -414,12 +419,15 @@ class Hookshot_REST_Dashboard {
 			$data[ $short_key ] = $value ?: null;
 		}
 
+		$data['bridge_config'] = Hookshot_Webhook_Secrets::without_bridge_secrets( $data['bridge_config'] );
+		$data = array_merge( $data, Hookshot_Webhook_Secrets::flags( $post->ID ) );
+
 		$data['health'] = Hookshot_Health::get_status( $post->ID );
 
 		$isIncoming = ( $data['type'] ?? 'incoming' ) === 'incoming';
 		if ( $isIncoming ) {
-			$secret = $data['secret'] ?? '';
-			$data['endpoint'] = rest_url( "xophz/v1/hookshot/incoming/{$secret}" );
+			$data['endpoint'] = Xophz_Compass_Hookshot_REST::receive_url( $post->ID );
+			$data['legacy_url_last_used'] = (int) get_post_meta( $post->ID, Xophz_Compass_Hookshot_REST::LEGACY_LAST_USED_META, true ) ?: null;
 		}
 
 		$categories = wp_get_post_terms( $post->ID, 'hookshot_category', [ 'fields' => 'names' ] );
@@ -450,13 +458,10 @@ class Hookshot_REST_Dashboard {
 		$meta_fields = [
 			'type'               => 'hookshot_type',
 			'status'             => 'hookshot_status',
-			'secret'             => 'hookshot_secret',
 			'target_url'         => 'hookshot_target_url',
 			'trigger_event'      => 'hookshot_trigger_event',
-			'signing_secret'     => 'hookshot_signing_secret',
 			'sig_header'         => 'hookshot_sig_header',
 			'auth_type'          => 'hookshot_auth_type',
-			'auth_value'         => 'hookshot_auth_value',
 			'auth_header'        => 'hookshot_auth_header',
 			'transform'          => 'hookshot_transform',
 			'incoming_transform' => 'hookshot_incoming_transform',
@@ -478,13 +483,11 @@ class Hookshot_REST_Dashboard {
 			$needsJson = is_array( $value );
 			$sanitized = $needsJson ? $value : sanitize_text_field( $value );
 
+			$sanitized = $param_key === 'bridge_config' ? Hookshot_Webhook_Secrets::without_bridge_secrets( $sanitized ) : $sanitized;
 			update_post_meta( $post_id, $meta_key, $sanitized );
 		}
 
-		$isNewIncoming = ( $params['type'] ?? '' ) === 'incoming' && empty( get_post_meta( $post_id, 'hookshot_secret', true ) );
-		if ( $isNewIncoming ) {
-			update_post_meta( $post_id, 'hookshot_secret', wp_generate_password( 24, false ) );
-		}
+		Hookshot_Webhook_Secrets::save( $post_id, $params );
 
 		$hasCategories = isset( $params['categories'] ) && is_array( $params['categories'] );
 		if ( $hasCategories ) {
