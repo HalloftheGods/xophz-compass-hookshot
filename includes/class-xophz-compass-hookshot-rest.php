@@ -191,7 +191,8 @@ class Xophz_Compass_Hookshot_REST {
 	 * Unauthenticated calls do not touch the webhook's health record.
 	 */
 	private function authenticate_signed( WP_REST_Request $request ) {
-		$webhook_id = (int) $request->get_param( 'id' );
+		// URL params only: get_param() prefers a JSON body's own "id" (every Stripe event has one).
+		$webhook_id = (int) ( $request->get_url_params()['id'] ?? 0 );
 
 		$isActiveIncoming = $webhook_id > 0
 			&& get_post_type( $webhook_id ) === 'compass_webhook'
@@ -217,7 +218,7 @@ class Xophz_Compass_Hookshot_REST {
 			return new WP_Error( 'legacy_url_retired', 'Secret URLs are retired. Use the signed receive endpoint.', [ 'status' => 410 ] );
 		}
 
-		$webhook_id = $this->resolve_webhook( $request->get_param( 'secret' ) );
+		$webhook_id = $this->resolve_webhook( $request->get_url_params()['secret'] ?? '' );
 		if ( ! is_wp_error( $webhook_id ) ) {
 			update_post_meta( $webhook_id, self::LEGACY_LAST_USED_META, time() );
 		}

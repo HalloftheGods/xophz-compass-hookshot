@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [2026-10-12]
 
 ### Fixed
+- **Signed receive ignored the URL's webhook id (#6020)**: `POST xophz/v1/hookshot/receive/{id}` read the id with `get_param()`, which prefers a JSON body's own top-level `id`. Every Stripe event carries one (`"id": "evt_..."`), so every Stripe delivery was looked up as webhook 0 and refused with a 401 before logging. The route now reads `id` (and the legacy route's `secret`) from the URL params only. GitHub release payloads have no top-level `id`, which is why release autodeploys kept working.
 - **Bearer header parsing (#6017)**: bearer mode accepts the `Authorization` scheme in any case (`Bearer`, `bearer`, `BEARER`), surrounding whitespace and more than one space after it; the token is still compared exactly with `hash_equals`.
 
 ### Added
