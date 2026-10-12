@@ -79,7 +79,16 @@ class Hookshot_Signature {
 			return new WP_Error( 'missing_signature', 'Missing Authorization header.', [ 'status' => 401 ] );
 		}
 
-		$isMatch = hash_equals( 'Bearer ' . $signing_secret, $header_value );
+		// The scheme is case-insensitive (RFC 9110) and senders pad the header, so match "bearer" in
+		// any case, ignore surrounding whitespace and allow more than one space after the scheme.
+		// The token is still compared exactly, with hash_equals.
+		$token   = '';
+		$isBearer = 1 === preg_match( '/\A\s*bearer\s+(\S(?:.*\S)?)\s*\z/is', $header_value, $parts );
+		if ( $isBearer ) {
+			$token = $parts[1];
+		}
+
+		$isMatch = $isBearer && hash_equals( $signing_secret, $token );
 		if ( ! $isMatch ) {
 			return new WP_Error( 'invalid_signature', 'Authorization header mismatch.', [ 'status' => 401 ] );
 		}

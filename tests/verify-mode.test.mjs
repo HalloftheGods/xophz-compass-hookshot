@@ -71,6 +71,22 @@ describe('Hookshot verify: bearer mode', () => {
     assert.strictEqual(res.status, 401);
   });
 
+  it('bearer accepts the scheme in any case and trims surrounding whitespace', () => {
+    for (const header of ['bearer whsec-bearer-secret', 'BEARER  whsec-bearer-secret', 'BeArEr whsec-bearer-secret', '  Bearer whsec-bearer-secret  ', 'Bearer\twhsec-bearer-secret', 'bearer     whsec-bearer-secret\n']) {
+      const res = php(bearer, { headers: { authorization: header } }, verdict);
+      assert.strictEqual(res.ok, true, JSON.stringify(header));
+      assert.strictEqual(res.verified, true, JSON.stringify(header));
+    }
+  });
+
+  it('bearer still compares the token exactly', () => {
+    for (const header of ['bearer WHSEC-BEARER-SECRET', 'Bearer whsec-bearer-secre', 'Bearer whsec-bearer-secret2', 'Bearerwhsec-bearer-secret', 'Basic whsec-bearer-secret', 'Bearer', 'Bearer ', 'Bearer a whsec-bearer-secret']) {
+      const res = php(bearer, { headers: { authorization: header } }, verdict);
+      assert.strictEqual(res.ok, false, JSON.stringify(header));
+      assert.strictEqual(res.verified, false, JSON.stringify(header));
+    }
+  });
+
   it('bearer refuses a missing header', () => {
     const res = php(bearer, { headers: {} }, verdict);
     assert.strictEqual(res.error, true);

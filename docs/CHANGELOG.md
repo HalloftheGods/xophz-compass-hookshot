@@ -5,6 +5,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [2026-10-12]
 
+### Fixed
+- **Bearer header parsing (#6017)**: bearer mode accepts the `Authorization` scheme in any case (`Bearer`, `bearer`, `BEARER`), surrounding whitespace and more than one space after it; the token is still compared exactly with `hash_equals`.
+
 ### Added
 - **Bearer verify mode (#6005)**: post meta `hookshot_verify_mode` (`hmac` default, or `bearer`), saved from the webhook editor's new "Verify with" select. In `bearer` mode `Hookshot_Signature::verify()` accepts a request only when its `Authorization` header equals `Bearer {signing secret}` (`hash_equals`), and marks it verified so `was_verified()` is true. A missing secret, missing header or mismatch is a 401; unlike `hmac`, a bearer webhook with no secret is never let through unsigned. Built for RevenueCat's fixed-header webhook. `hmac` behavior is unchanged.
 - First `tests/run-tests.mjs` for the plugin (`tests/verify-mode.test.mjs`).
