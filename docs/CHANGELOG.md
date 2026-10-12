@@ -3,6 +3,12 @@
 All notable changes to this WordPress plugin submodule will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [2026-10-12]
+
+### Added
+- **Bearer verify mode (#6005)**: post meta `hookshot_verify_mode` (`hmac` default, or `bearer`), saved from the webhook editor's new "Verify with" select. In `bearer` mode `Hookshot_Signature::verify()` accepts a request only when its `Authorization` header equals `Bearer {signing secret}` (`hash_equals`), and marks it verified so `was_verified()` is true. A missing secret, missing header or mismatch is a 401; unlike `hmac`, a bearer webhook with no secret is never let through unsigned. Built for RevenueCat's fixed-header webhook. `hmac` behavior is unchanged.
+- First `tests/run-tests.mjs` for the plugin (`tests/verify-mode.test.mjs`).
+
 ## [2026-10-10]
 
 ### Security

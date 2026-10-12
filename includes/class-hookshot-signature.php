@@ -33,6 +33,11 @@ class Hookshot_Signature {
 
 		$signing_secret = get_post_meta( $webhook_id, 'hookshot_signing_secret', true );
 
+		$isBearerMode = 'bearer' === get_post_meta( $webhook_id, 'hookshot_verify_mode', true );
+		if ( $isBearerMode ) {
+			return self::verify_bearer( $request, $webhook_id, $signing_secret );
+		}
+
 		$hasNoSecret = empty( $signing_secret );
 		if ( $hasNoSecret ) {
 			return true;
@@ -55,6 +60,33 @@ class Hookshot_Signature {
 		}
 
 		return $result;
+	}
+
+	/**
+	 * Bearer mode: the sender posts a fixed `Authorization: Bearer {secret}` header (RevenueCat).
+	 * Unlike hmac mode, a webhook with no stored secret is refused, never let through unsigned.
+	 */
+	private static function verify_bearer( WP_REST_Request $request, $webhook_id, $signing_secret ) {
+		$hasNoSecret = ! is_string( $signing_secret ) || '' === $signing_secret;
+		if ( $hasNoSecret ) {
+			return new WP_Error( 'signature_not_configured', 'Webhook has no signing secret.', [ 'status' => 401 ] );
+		}
+
+		$header_value = $request->get_header( 'authorization' );
+
+		$hasNoHeader = ! is_string( $header_value ) || '' === $header_value;
+		if ( $hasNoHeader ) {
+			return new WP_Error( 'missing_signature', 'Missing Authorization header.', [ 'status' => 401 ] );
+		}
+
+		$isMatch = hash_equals( 'Bearer ' . $signing_secret, $header_value );
+		if ( ! $isMatch ) {
+			return new WP_Error( 'invalid_signature', 'Authorization header mismatch.', [ 'status' => 401 ] );
+		}
+
+		self::$verified[ (int) $webhook_id ] = true;
+
+		return true;
 	}
 
 	/**

@@ -399,7 +399,7 @@ class Hookshot_REST_Dashboard {
 		$meta_keys = [
 			'hookshot_type', 'hookshot_status',
 			'hookshot_target_url', 'hookshot_trigger_event',
-			'hookshot_sig_header', 'hookshot_auth_type',
+			'hookshot_sig_header', 'hookshot_verify_mode', 'hookshot_auth_type',
 			'hookshot_auth_header', 'hookshot_transform', 'hookshot_incoming_transform',
 			'hookshot_bridges', 'hookshot_bridge_config', 'hookshot_allowed_ips',
 			'hookshot_rate_limit', 'hookshot_max_retries', 'hookshot_last_fired',
@@ -461,6 +461,7 @@ class Hookshot_REST_Dashboard {
 			'target_url'         => 'hookshot_target_url',
 			'trigger_event'      => 'hookshot_trigger_event',
 			'sig_header'         => 'hookshot_sig_header',
+			'verify_mode'        => 'hookshot_verify_mode',
 			'auth_type'          => 'hookshot_auth_type',
 			'auth_header'        => 'hookshot_auth_header',
 			'transform'          => 'hookshot_transform',
@@ -482,6 +483,11 @@ class Hookshot_REST_Dashboard {
 			$value = $params[ $param_key ];
 			$needsJson = is_array( $value );
 			$sanitized = $needsJson ? $value : sanitize_text_field( $value );
+
+			$isVerifyMode = 'verify_mode' === $param_key;
+			if ( $isVerifyMode ) {
+				$sanitized = 'bearer' === $sanitized ? 'bearer' : 'hmac';
+			}
 
 			$sanitized = $param_key === 'bridge_config' ? Hookshot_Webhook_Secrets::without_bridge_secrets( $sanitized ) : $sanitized;
 			update_post_meta( $post_id, $meta_key, $sanitized );
