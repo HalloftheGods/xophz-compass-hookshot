@@ -948,16 +948,11 @@ class Hookshot_Bridges {
 			];
 		}
 
-		// Clean target directory before install if backup exists
-		if ( $backup_created && $wp_filesystem->is_dir( $target_dir_path ) ) {
-			$wp_filesystem->delete( $target_dir_path, true );
-		}
-
-		// Run installation using pre-downloaded package.
-		$args = [
-			'overwrite_package' => true,
-		];
-		$installed = $upgrader->install( $tmp_download, $args );
+		// Unpack and install into a staging directory under wp-content/hookshot, then swap it into place
+		// with two renames. Deleting the live directory and letting the upgrader copy the new files in
+		// one by one gave every deploy a window where the main file existed but its includes did not,
+		// which is the fatal the 2026-10-26 skeleton froze in place.
+		$installed = $this->install_staged( $upgrader, $tmp_download, $target_dir_path, $is_theme );
 		@unlink( $tmp_download );
 		
 		remove_filter( 'upgrader_source_selection', $rename_filter, 10 );
@@ -1118,6 +1113,85 @@ class Hookshot_Bridges {
 			'target_tag'         => $release_tag,
 			'rollback_performed' => $rollback_performed,
 		];
+	}
+
+	/**
+	 * Installs $package into a staging directory and swaps it into $target_dir_path with renames.
+	 *
+	 * Plugin_Upgrader::install() and Theme_Upgrader::install() copy straight into the live directory;
+	 * this runs the same upgrader with a staging destination, so the live directory changes only by
+	 * two renames (old aside, new in) and is never half-written. The retired copy and the stage are
+	 * removed afterwards; on a failed swap the old directory is put back.
+	 *
+	 * @param WP_Upgrader $upgrader        Plugin_Upgrader or Theme_Upgrader with a silent skin.
+	 * @param string      $package         Local path of the downloaded release zip.
+	 * @param string      $target_dir_path Live directory, e.g. WP_PLUGIN_DIR/<slug>.
+	 * @param bool        $is_theme        Theme install (style.css) rather than a plugin.
+	 * @return true|WP_Error
+	 */
+	private function install_staged( $upgrader, $package, $target_dir_path, $is_theme ) {
+		global $wp_filesystem;
+
+		// Not under wp-content/upgrade: WP_Upgrader::unpack_package() empties that directory on every run.
+		$slug       = basename( $target_dir_path );
+		$stage_root = Hookshot_Install_Lock::work_dir() . '/stage-' . Hookshot_Install_Lock::safe_slug( $slug ) . '-' . time();
+		$staged     = $stage_root . '/' . $slug;
+		$retired    = $stage_root . '/retired';
+
+		if ( $wp_filesystem->is_dir( $stage_root ) ) {
+			$wp_filesystem->delete( $stage_root, true );
+		}
+		if ( ! $wp_filesystem->mkdir( $stage_root, FS_CHMOD_DIR ) ) {
+			return new WP_Error( 'stage_failed', "Could not create the staging directory {$stage_root}." );
+		}
+
+		// What Plugin_Upgrader::install() / Theme_Upgrader::install() do, with our destination.
+		$upgrader->init();
+		$upgrader->install_strings();
+		add_filter( 'upgrader_source_selection', [ $upgrader, 'check_package' ] );
+		$result = $upgrader->run( [
+			'package'           => $package,
+			'destination'       => $staged,
+			'clear_destination' => true,
+			'clear_working'     => true,
+			'hook_extra'        => [ 'type' => $is_theme ? 'theme' : 'plugin', 'action' => 'install' ],
+		] );
+		remove_filter( 'upgrader_source_selection', [ $upgrader, 'check_package' ] );
+
+		if ( is_wp_error( $result ) || ! $result || ! $wp_filesystem->is_dir( $staged ) ) {
+			$wp_filesystem->delete( $stage_root, true );
+			if ( is_wp_error( $result ) ) {
+				return $result;
+			}
+			return new WP_Error( 'stage_failed', "The upgrader produced nothing at {$staged}." );
+		}
+
+		// The swap: the live directory is absent only between these two renames.
+		if ( $wp_filesystem->is_dir( $target_dir_path ) && ! $wp_filesystem->move( $target_dir_path, $retired ) ) {
+			$wp_filesystem->delete( $stage_root, true );
+			return new WP_Error( 'swap_failed', "Could not move the current {$slug} aside." );
+		}
+		if ( ! $wp_filesystem->move( $staged, $target_dir_path ) ) {
+			// A rename cannot cross filesystems; copy instead (the pre-fix behaviour, with its short window).
+			$copied = $wp_filesystem->mkdir( $target_dir_path, FS_CHMOD_DIR ) ? copy_dir( $staged, $target_dir_path ) : false;
+			if ( is_wp_error( $copied ) || ! $copied ) {
+				$wp_filesystem->delete( $target_dir_path, true );
+				if ( $wp_filesystem->is_dir( $retired ) ) {
+					$wp_filesystem->move( $retired, $target_dir_path );
+				}
+				$wp_filesystem->delete( $stage_root, true );
+				return new WP_Error( 'swap_failed', "Could not move or copy the staged {$slug} into place; the previous files were kept." );
+			}
+		}
+
+		$wp_filesystem->delete( $stage_root, true );
+
+		if ( $is_theme && function_exists( 'wp_clean_themes_cache' ) ) {
+			wp_clean_themes_cache( true );
+		} elseif ( ! $is_theme && function_exists( 'wp_clean_plugins_cache' ) ) {
+			wp_clean_plugins_cache( true );
+		}
+		return true;
 	}
 
 	public function bridge_github_sponsors( $payload, $webhook_id, $config ) {

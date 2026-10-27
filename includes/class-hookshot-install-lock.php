@@ -9,11 +9,12 @@
  * rolled back over the other's rollback. On 2026-10-26 that left xophz-compass-xp a half-copied
  * skeleton and seven sites fatal for two days.
  *
- * An exclusive flock() on a file under wp-content/upgrade is shared by every process on the host, so
+ * An exclusive flock() on a file under wp-content/hookshot is shared by every process on the host, so
  * the second run waits for the first and then sees the version it installed. The lock is released
  * when the object is destroyed, so every return path of the bridge releases it. The lock file is never
  * unlinked: a waiter that opened the old inode and a newcomer that created a new one would otherwise
- * both hold "the" lock.
+ * both hold "the" lock. It cannot live in wp-content/upgrade: WP_Upgrader::unpack_package() empties
+ * that directory on every run, which would unlink the lock while an install holds it.
  */
 class Hookshot_Install_Lock {
 
@@ -45,15 +46,7 @@ class Hookshot_Install_Lock {
 	public static function acquire( $slug, $wait_seconds = null ) {
 		$wait_seconds = $wait_seconds === null ? self::WAIT_SECONDS : max( 0, (int) $wait_seconds );
 		$path         = self::path_for( $slug );
-		$dir          = dirname( $path );
-
-		if ( ! is_dir( $dir ) ) {
-			if ( function_exists( 'wp_mkdir_p' ) ) {
-				wp_mkdir_p( $dir );
-			} else {
-				@mkdir( $dir, 0755, true );
-			}
-		}
+		$dir          = self::work_dir();
 
 		$handle = is_dir( $dir ) ? @fopen( $path, 'c' ) : false;
 		if ( ! $handle ) {
@@ -81,11 +74,37 @@ class Hookshot_Install_Lock {
 		);
 	}
 
-	/** The lock file for a slug: wp-content/upgrade/hookshot-install-<slug>.lock. */
+	/** The lock file for a slug: wp-content/hookshot/install-<slug>.lock. */
 	public static function path_for( $slug ) {
+		return self::work_dir( false ) . '/install-' . self::safe_slug( $slug ) . '.lock';
+	}
+
+	/** A directory name safe form of a slug. */
+	public static function safe_slug( $slug ) {
 		$safe = strtolower( preg_replace( '/[^A-Za-z0-9._-]+/', '-', (string) $slug ) );
-		$safe = trim( $safe, '-.' ) ?: 'unnamed';
-		return rtrim( WP_CONTENT_DIR, '/\\' ) . '/upgrade/hookshot-install-' . $safe . '.lock';
+		return trim( $safe, '-.' ) ?: 'unnamed';
+	}
+
+	/**
+	 * Hookshot's own scratch directory, wp-content/hookshot: locks and install stages live here because
+	 * WordPress empties wp-content/upgrade on every upgrader run. Created on demand with an index.php.
+	 *
+	 * @param bool $create Create the directory when it is missing.
+	 * @return string Path without a trailing slash.
+	 */
+	public static function work_dir( $create = true ) {
+		$dir = rtrim( WP_CONTENT_DIR, '/\\' ) . '/hookshot';
+		if ( $create && ! is_dir( $dir ) ) {
+			if ( function_exists( 'wp_mkdir_p' ) ) {
+				wp_mkdir_p( $dir );
+			} else {
+				@mkdir( $dir, 0755, true );
+			}
+			if ( is_dir( $dir ) && ! file_exists( $dir . '/index.php' ) ) {
+				@file_put_contents( $dir . '/index.php', "<?php\n// Silence is golden.\n" );
+			}
+		}
+		return $dir;
 	}
 
 	public function path() {

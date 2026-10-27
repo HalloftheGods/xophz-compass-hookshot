@@ -6,7 +6,8 @@
  * release into the one shared plugins directory at the same moment: each run deleted the directory
  * the other was copying into, then rolled back over the other's rollback. On 2026-10-26 that left
  * xophz-compass-xp a half-copied skeleton and seven sites fatal for two days. The per-site transient
- * could not see the other site; an flock() on a file under wp-content/upgrade can.
+ * could not see the other site; an flock() on a file under wp-content/hookshot can (not under
+ * wp-content/upgrade, which WP_Upgrader::unpack_package() empties on every run).
  */
 
 import { describe, it, assert } from '../../xophz-compass/tests/harness/test-framework.mjs';
@@ -36,14 +37,16 @@ describe('Hookshot install lock', () => {
         'second' => is_wp_error( $second ) ? $second->get_error_code() : 'held',
         'other'  => $other instanceof Hookshot_Install_Lock,
         'third'  => $third instanceof Hookshot_Install_Lock,
-        'file'   => is_file( WP_CONTENT_DIR . '/upgrade/hookshot-install-xophz-compass-xp.lock' ),
+        'file'   => is_file( WP_CONTENT_DIR . '/hookshot/install-xophz-compass-xp.lock' ),
+        'index'  => is_file( WP_CONTENT_DIR . '/hookshot/index.php' ),
       ]);
     `);
     assert.strictEqual(res.first, true);
     assert.strictEqual(res.second, 'install_locked');
     assert.strictEqual(res.other, true, 'a different slug has its own lock');
     assert.strictEqual(res.third, true);
-    assert.strictEqual(res.file, true, 'the lock file lives under wp-content/upgrade');
+    assert.strictEqual(res.file, true, 'the lock file lives under wp-content/hookshot');
+    assert.strictEqual(res.index, true, 'the work dir gets an index.php');
   });
 
   it('is released when the holder goes out of scope, so every return path of the bridge releases it', () => {
