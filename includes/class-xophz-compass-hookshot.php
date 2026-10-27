@@ -26,6 +26,7 @@ class Xophz_Compass_Hookshot {
 		require_once $dir . 'class-hookshot-health.php';
 		require_once $dir . 'class-hookshot-retry.php';
 		require_once $dir . 'class-hookshot-notifier.php';
+		require_once $dir . 'class-hookshot-install-lock.php';
 		require_once $dir . 'class-hookshot-bridges.php';
 		require_once $dir . 'class-hookshot-rest-dashboard.php';
 		require_once $dir . 'class-hookshot-gc.php';

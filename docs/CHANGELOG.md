@@ -3,6 +3,11 @@
 All notable changes to this WordPress plugin submodule will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [2026-10-27]
+
+### Fixed
+- **Concurrent release installs trampled one plugin directory**: the GitHub Plugin Release bridge deduplicated with a transient, which is stored per site, so two sites of one network that both receive a repository's release events (doit.forthexp.com and mycompassconsulting.com) installed the same release into the shared `wp-content/plugins/<slug>` at the same moment. Each run deleted the directory the other was copying into, one lost its temp zip to the other's cleanup ("Download failed"), the other found no plugin header after "Plugin installed successfully", and the two rollbacks moved over each other. On 2026-10-26 02:53 UTC that left `xophz-compass-xp` as 80 of 109 files (no `includes/class-xophz-compass-xp.php`) and seven sites fatal until the directory was restored by hand on 2026-10-27. `Hookshot_Install_Lock` (`includes/class-hookshot-install-lock.php`) now takes an exclusive `flock()` on `wp-content/upgrade/hookshot-install-<slug>.lock`, shared by every site and PHP process on the host, before the version check and until the bridge returns; a second run waits up to 120 s, then sees the version the first installed and skips. When no lock file can be opened the bridge refuses to install rather than run unlocked (`install_lock_unavailable`). Tests: `tests/install-lock.test.mjs`.
+
 ## [2026-10-12]
 
 ### Fixed

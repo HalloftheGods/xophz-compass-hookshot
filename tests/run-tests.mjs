@@ -5,6 +5,7 @@
 import { harness } from '../../xophz-compass/tests/harness/test-framework.mjs';
 import './verify-mode.test.mjs';
 import './route-params.test.mjs';
+import './install-lock.test.mjs';
 
 const results = await harness.run();
 if (results.failed > 0) {

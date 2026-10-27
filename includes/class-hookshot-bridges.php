@@ -426,6 +426,22 @@ class Hookshot_Bridges {
 			set_transient( $lock_key, time(), 60 );
 		}
 
+		// Step 2b: One install per slug at a time on this host. The transient above is stored per site, so
+		// two sites of a network that both receive this repository's release events could not see each
+		// other and installed into the one shared directory at once (2026-10-26: xophz-compass-xp left as a
+		// half-copied skeleton, seven sites fatal). The flock is held by $install_lock until this method
+		// returns, on every path; a run that waited sees the version the earlier run installed.
+		$install_lock = Hookshot_Install_Lock::acquire( $slug );
+		if ( is_wp_error( $install_lock ) ) {
+			return [
+				'status'      => $install_lock->get_error_code() === 'install_locked' ? 'skipped' : 'error',
+				'step'        => 'install_lock',
+				'details'     => 'Step skipped: ' . $install_lock->get_error_message(),
+				'slug'        => $slug,
+				'release_tag' => $release_tag,
+			];
+		}
+
 		// Optional filter to only update specific plugins if configured
 		$allowed_plugins = $config['allowed_plugins'] ?? '';
 		if ( ! empty( $allowed_plugins ) ) {
